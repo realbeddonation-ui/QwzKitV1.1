@@ -5931,6 +5931,20 @@ end
 
 
 function K.buildMenu()
+	local isTouch = UserInputService.TouchEnabled
+	if isTouch then
+		local cam = Workspace.CurrentCamera
+		local vp = cam and cam.ViewportSize or Vector2.new(900, 600)
+		local maxW = math.max(260, math.floor(vp.X * 0.62))
+		local maxH = math.max(360, math.floor(vp.Y * 0.72))
+		ESP.menuWidth = math.floor(math.min(ESP.menuWidth, maxW, 360) + 0.5)
+		ESP.menuHeight = math.floor(math.min(ESP.menuHeight, maxH, 500) + 0.5)
+		if ESP.menuScale > 0.9 then
+			ESP.menuScale = 0.85
+		end
+		ESP.menuTabTextSize = math.min(ESP.menuTabTextSize, 9)
+	end
+
 	local screen = Instance.new("ScreenGui")
 	screen.Name = MENU_NAME
 	screen.ResetOnSpawn = false
@@ -5968,7 +5982,34 @@ function K.buildMenu()
 		screen = screen,
 	}
 
-	local dragHeight = 48
+	-- Mobile-friendly toggle (keeps PC minus-key behavior unchanged).
+	if isTouch then
+		local inset = GuiService:GetGuiInset()
+		local openBtn = Instance.new("TextButton")
+		openBtn.Name = "MobileMenuToggle"
+		openBtn.AutoButtonColor = true
+		openBtn.Text = "≡"
+		openBtn.Font = Enum.Font.GothamBlack
+		openBtn.TextSize = 18
+		openBtn.TextColor3 = Color3.fromRGB(235, 240, 255)
+		openBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 65)
+		openBtn.BackgroundTransparency = 0.1
+		openBtn.BorderSizePixel = 0
+		openBtn.Size = UDim2.fromOffset(38, 38)
+		openBtn.Position = UDim2.new(0, 10 + inset.X, 0, 10 + inset.Y)
+		openBtn.ZIndex = 20
+		openBtn.Parent = screen
+		K.roundCorners(openBtn, 10)
+		local s = Instance.new("UIStroke", openBtn)
+		s.Thickness = 1
+		s.Transparency = 0.6
+		s.Color = Color3.fromRGB(120, 170, 255)
+		openBtn.Activated:Connect(function()
+			panel.Visible = not panel.Visible
+		end)
+	end
+
+	local dragHeight = isTouch and 42 or 48
 	local topBar = Instance.new("TextButton")
 	topBar.AutoButtonColor = false
 	topBar.Text = ""
@@ -5992,7 +6033,7 @@ function K.buildMenu()
 	title.Position = UDim2.fromOffset(14, 6)
 	title.Size = UDim2.new(1, -80, 0, 22)
 	title.Font = Enum.Font.GothamBlack
-	title.TextSize = 17
+	title.TextSize = isTouch and 15 or 17
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.TextColor3 = Color3.new(1, 1, 1)
 	title.Text = "Qwz kit"
@@ -6005,10 +6046,11 @@ function K.buildMenu()
 	subtitle.Position = UDim2.fromOffset(14, 26)
 	subtitle.Size = UDim2.new(1, -80, 0, 18)
 	subtitle.Font = Enum.Font.GothamMedium
-	subtitle.TextSize = 11
+	subtitle.TextSize = isTouch and 10 or 11
 	subtitle.TextXAlignment = Enum.TextXAlignment.Left
 	subtitle.TextColor3 = COL.muted
-	subtitle.Text = "Drag header to move · − key toggles · − closes"
+	subtitle.Text = isTouch and "Drag header to move · button toggles · close hides"
+		or "Drag header to move · − key toggles · − closes"
 	subtitle.ZIndex = 3
 	subtitle.Active = false
 	subtitle.Parent = topBar
@@ -6073,7 +6115,7 @@ function K.buildMenu()
 		end
 	end)
 
-	local tabH = 36
+	local tabH = isTouch and 32 or 36
 	local tabY = dragHeight
 	local tabBar = Instance.new("Frame")
 	tabBar.BackgroundColor3 = Color3.fromRGB(18, 20, 32)
