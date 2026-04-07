@@ -120,6 +120,8 @@ local combatResistAntiMoveOn = true
 local combatResistAntiMoveStrength = 0.75
 local combatResistDriftGain = 1.1
 local combatResistAntiTpBypass = true
+local combatResistNoTpOn = true
+local combatResistNoTpDist = 7
 local combatResistLabel = nil
 
 local animScanR6PathOnly = true
@@ -1655,10 +1657,12 @@ function K.startCombatResist()
 	local stuckSince = nil
 	local lastFlatPos = nil
 	local desiredFlatPos = nil
+	local noTpLastPos = nil
 	combatResistConn = RunService.Heartbeat:Connect(function(dt)
 		if not combatResistOn then
 			stuckSince = nil
 			lastFlatPos = nil
+			noTpLastPos = nil
 			return
 		end
 		local myRoot = K.getRoot()
@@ -1667,13 +1671,25 @@ function K.startCombatResist()
 			stuckSince = nil
 			lastFlatPos = nil
 			desiredFlatPos = nil
+			noTpLastPos = nil
 			return
 		end
 		if h and h.Health <= 0 and not combatResistAllowDead then
 			stuckSince = nil
 			lastFlatPos = nil
 			desiredFlatPos = nil
+			noTpLastPos = nil
 			return
+		end
+		if combatResistNoTpOn and noTpLastPos and combatResistNoTpDist > 0 then
+			local jumped = (myRoot.Position - noTpLastPos).Magnitude
+			if jumped > combatResistNoTpDist then
+				local lv = myRoot.CFrame.LookVector
+				myRoot.CFrame = CFrame.new(noTpLastPos, noTpLastPos + lv)
+				myRoot.AssemblyLinearVelocity = Vector3.zero
+				myRoot.AssemblyAngularVelocity = Vector3.zero
+				desiredFlatPos = Vector3.new(noTpLastPos.X, 0, noTpLastPos.Z)
+			end
 		end
 		if h then
 			-- Keep upright; avoid "fall over" feel from forced physics state changes.
@@ -1726,6 +1742,7 @@ function K.startCombatResist()
 				local curV = myRoot.AssemblyLinearVelocity
 				myRoot.AssemblyLinearVelocity = Vector3.new(curV.X * (1 - antiA), curV.Y, curV.Z * (1 - antiA))
 			end
+			noTpLastPos = myRoot.Position
 			return
 		end
 		if flatDir.Magnitude > 0.001 then
@@ -1761,6 +1778,7 @@ function K.startCombatResist()
 			end
 			local curV = myRoot.AssemblyLinearVelocity
 			myRoot.AssemblyLinearVelocity = curV:Lerp(targetVel, combatResistVelLerp)
+			noTpLastPos = myRoot.Position
 			return
 		end
 		local now = os.clock()
@@ -1772,6 +1790,7 @@ function K.startCombatResist()
 		lastFlatPos = flatPos
 		if moved then
 			stuckSince = nil
+			noTpLastPos = myRoot.Position
 			return
 		end
 		if not stuckSince then
@@ -1779,6 +1798,7 @@ function K.startCombatResist()
 			return
 		end
 		if now - stuckSince < combatResistStuckTime then
+			noTpLastPos = myRoot.Position
 			return
 		end
 		if h then
@@ -1786,6 +1806,7 @@ function K.startCombatResist()
 		end
 		myRoot.AssemblyLinearVelocity = myRoot.AssemblyLinearVelocity:Lerp(targetVel, combatResistVelLerp)
 		stuckSince = now - (combatResistStuckTime * 0.5)
+		noTpLastPos = myRoot.Position
 	end)
 end
 
@@ -1797,14 +1818,14 @@ function K.setCombatResistRunning()
 	end
 	if combatResistLabel then
 		combatResistLabel.Text = string.format(
-			"Movement resistance: %s | speed %.0f anti-move %s(%.2f) force %.2f drift %.2f dead %s",
+			"Movement resistance: %s | speed %.0f anti-move %s(%.2f) force %.2f notp %s(%.1f)",
 			combatResistOn and "ON" or "OFF",
 			combatResistSpeed,
 			combatResistAntiMoveOn and "on" or "off",
 			combatResistAntiMoveStrength,
 			combatResistCounterForce,
-			combatResistDriftGain,
-			combatResistAllowDead and "on" or "off"
+			combatResistNoTpOn and "on" or "off",
+			combatResistNoTpDist
 		)
 	end
 end
@@ -5993,6 +6014,11 @@ function K.menuFillCombatTab(pageCombat)
 	end, function(v)
 		combatResistDriftGain = v
 	end, 0.1, K.setCombatResistRunning)
+	numRow("NoTP dist", function()
+		return combatResistNoTpDist
+	end, function(v)
+		combatResistNoTpDist = v
+	end, 0.5, K.setCombatResistRunning)
 	local resistNudgeTog = K.makeToggleButton(pageCombat, "Resist nudge: on", function(btn)
 		combatResistUseNudge = not combatResistUseNudge
 		btn.Text = combatResistUseNudge and "Resist nudge: on" or "Resist nudge: off"
@@ -6021,6 +6047,11 @@ function K.menuFillCombatTab(pageCombat)
 	local resistAntiTpTog = K.makeToggleButton(pageCombat, "Resist anti-TP bypass: on", function(btn)
 		combatResistAntiTpBypass = not combatResistAntiTpBypass
 		btn.Text = combatResistAntiTpBypass and "Resist anti-TP bypass: on" or "Resist anti-TP bypass: off"
+		K.setCombatResistRunning()
+	end)
+	local resistNoTpTog = K.makeToggleButton(pageCombat, "Resist NoTP lock: on", function(btn)
+		combatResistNoTpOn = not combatResistNoTpOn
+		btn.Text = combatResistNoTpOn and "Resist NoTP lock: on" or "Resist NoTP lock: off"
 		K.setCombatResistRunning()
 	end)
 
