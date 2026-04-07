@@ -55,10 +55,12 @@ local loopWalkSpeed = 28
 local flyHoldY = nil
 local flyVerticalSpeed = 55
 local flyAltHoldGain = 10
+local flyAntiStuckOn = true
 -- Full camera-relative flight; separate hotkey so minus can stay menu-only.
 local flyToggleKey = Enum.KeyCode.F
 local flyKeybindListen = false
 local flyKeybindBtn = nil
+local flyAntiStuckBtn = nil
 
 -- ========= Combat QA (observe only; server owns hitboxes) =========
 local hitboxDebugOn = false
@@ -102,6 +104,18 @@ local combatBoostOn = false
 local combatBoostConn = nil
 local combatBoostMult = 1.65
 local combatBoostLabel = nil
+local combatResistOn = false
+local combatResistConn = nil
+local combatResistSpeed = 42
+local combatResistStuckTime = 0.22
+local combatResistMoveEps = 0.05
+local combatResistNudge = 0.2
+local combatResistVelLerp = 0.7
+local combatResistUseNudge = true
+local combatResistAllowDead = true
+local combatResistAlwaysMove = true
+local combatResistUseFlySpeed = true
+local combatResistLabel = nil
 
 local animScanR6PathOnly = true
 local animPathFilterText = "R6"
@@ -380,7 +394,7 @@ function K.afterPhysics()
 	end
 
 	-- Loop TP / orbit strafe / fling move the HRP in ways anti-TP treats as "teleports" — skip undo.
-	if loopTpOn or combatStrafeOn or CC.flingInProgress then
+	if loopTpOn or combatStrafeOn or combatResistOn or CC.flingInProgress then
 		K.saveSpot(r)
 		return
 	end
@@ -473,7 +487,7 @@ function K.heartbeatAgain()
 	if not antiTpOn then
 		return
 	end
-	if loopTpOn or combatStrafeOn or CC.flingInProgress then
+	if loopTpOn or combatStrafeOn or combatResistOn or CC.flingInProgress then
 		return
 	end
 	if strongMode then
@@ -493,7 +507,7 @@ function K.drawFrameAgain()
 	if not antiTpOn or not savedPivot then
 		return
 	end
-	if loopTpOn or combatStrafeOn or CC.flingInProgress then
+	if loopTpOn or combatStrafeOn or combatResistOn or CC.flingInProgress then
 		return
 	end
 	local r = K.getRoot()
@@ -704,6 +718,8 @@ end
 
 function K.startFly()
 	K.stopFly()
+	local stuckSince = nil
+	local lastFlatPos = nil
 	flyConn = RunService.RenderStepped:Connect(function()
 		if not flyOn then return end
 		local char = me.Character
@@ -711,7 +727,9 @@ function K.startFly()
 		local root = char and char:FindFirstChild("HumanoidRootPart")
 		local cam = K.getCam()
 		if not hum or not root or not cam then return end
-		hum.PlatformStand = true
+		local isTouch = UserInputService.TouchEnabled
+		-- Keep touch controls responsive on mobile.
+		hum.PlatformStand = not isTouch
 		hum.AutoRotate = false
 		if flyHoldY == nil then
 			flyHoldY = root.Position.Y
@@ -725,12 +743,52 @@ function K.startFly()
 		if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += right end
 		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
 		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.C) then dir -= Vector3.yAxis end
+		if dir.Magnitude < 0.01 and isTouch then
+			-- Mobile joystick writes world-space MoveDirection through the player module.
+			local md = hum.MoveDirection
+			local flat = Vector3.new(md.X, 0, md.Z)
+			if flat.Magnitude > 0.01 then
+				dir += flat.Unit
+			end
+		end
 		local anyKeyPressed = dir.Magnitude > 0.01
 		if anyKeyPressed then
 			flyHoldY = root.Position.Y
 			local desiredVel = dir.Unit * flySpeed
 			root.AssemblyLinearVelocity = root.AssemblyLinearVelocity:Lerp(desiredVel, 0.22)
+			if flyAntiStuckOn then
+				local now = os.clock()
+				local flatPos = Vector3.new(root.Position.X, 0, root.Position.Z)
+				local movedFlat = false
+				if lastFlatPos then
+					movedFlat = (flatPos - lastFlatPos).Magnitude > 0.03
+				end
+				lastFlatPos = flatPos
+				local v = root.AssemblyLinearVelocity
+				local flatVel = Vector3.new(v.X, 0, v.Z).Magnitude
+				local slowThreshold = math.max(2, flySpeed * 0.08)
+				if flatVel < slowThreshold and not movedFlat then
+					if not stuckSince then
+						stuckSince = now
+					elseif now - stuckSince > 0.3 then
+						local flatDir = Vector3.new(dir.X, 0, dir.Z)
+						if flatDir.Magnitude > 0.01 then
+							flatDir = flatDir.Unit
+							root.CFrame = root.CFrame + flatDir * 0.18
+						end
+						root.AssemblyLinearVelocity = root.AssemblyLinearVelocity:Lerp(desiredVel * 1.15, 0.65)
+						pcall(function()
+							hum:ChangeState(Enum.HumanoidStateType.Physics)
+						end)
+						stuckSince = now - 0.15
+					end
+				else
+					stuckSince = nil
+				end
+			end
 		else
+			stuckSince = nil
+			lastFlatPos = Vector3.new(root.Position.X, 0, root.Position.Z)
 			root.CFrame = CFrame.new(Vector3.new(root.Position.X, flyHoldY, root.Position.Z), Vector3.new(root.Position.X + look.X, flyHoldY, root.Position.Z + look.Z))
 			root.AssemblyLinearVelocity = Vector3.zero
 		end
@@ -1580,6 +1638,147 @@ function K.setCombatBoostRunning()
 	end
 end
 
+function K.stopCombatResist()
+	if combatResistConn then
+		combatResistConn:Disconnect()
+		combatResistConn = nil
+	end
+end
+
+function K.startCombatResist()
+	K.stopCombatResist()
+	local stuckSince = nil
+	local lastFlatPos = nil
+	combatResistConn = RunService.RenderStepped:Connect(function()
+		if not combatResistOn then
+			stuckSince = nil
+			lastFlatPos = nil
+			return
+		end
+		local myRoot = K.getRoot()
+		local h = K.getHumanoid()
+		if not myRoot then
+			stuckSince = nil
+			lastFlatPos = nil
+			return
+		end
+		if h and h.Health <= 0 and not combatResistAllowDead then
+			stuckSince = nil
+			lastFlatPos = nil
+			return
+		end
+		local cam = K.getCam()
+		local flatDir = Vector3.zero
+		local moveY = 0
+		if cam then
+			local look = cam.CFrame.LookVector
+			local right = cam.CFrame.RightVector
+			local flatLook = Vector3.new(look.X, 0, look.Z)
+			local flatRight = Vector3.new(right.X, 0, right.Z)
+			if flatLook.Magnitude > 0.001 then
+				flatLook = flatLook.Unit
+			end
+			if flatRight.Magnitude > 0.001 then
+				flatRight = flatRight.Unit
+			end
+			if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
+				flatDir += flatLook
+			end
+			if UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then
+				flatDir -= flatLook
+			end
+			if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then
+				flatDir -= flatRight
+			end
+			if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then
+				flatDir += flatRight
+			end
+			if flyOn and UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+				moveY += 1
+			end
+			if flyOn and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.C)) then
+				moveY -= 1
+			end
+		end
+		if flatDir.Magnitude < 0.001 and h then
+			local md = h.MoveDirection
+			flatDir = Vector3.new(md.X, 0, md.Z)
+		end
+		if flatDir.Magnitude < 0.001 and math.abs(moveY) < 0.001 then
+			stuckSince = nil
+			lastFlatPos = Vector3.new(myRoot.Position.X, 0, myRoot.Position.Z)
+			return
+		end
+		if flatDir.Magnitude > 0.001 then
+			flatDir = flatDir.Unit
+		end
+		local pushSpeed = math.max(4, combatResistUseFlySpeed and flyOn and flySpeed or combatResistSpeed)
+		local desiredY = myRoot.AssemblyLinearVelocity.Y
+		if flyOn and math.abs(moveY) > 0.001 then
+			desiredY = moveY * pushSpeed
+		end
+		local targetVel = Vector3.new(flatDir.X * pushSpeed, desiredY, flatDir.Z * pushSpeed)
+		if combatResistAlwaysMove then
+			myRoot.AssemblyLinearVelocity = myRoot.AssemblyLinearVelocity:Lerp(targetVel, math.clamp(combatResistVelLerp, 0.1, 1))
+			if combatResistUseNudge and combatResistNudge > 0 and flatDir.Magnitude > 0.001 then
+				myRoot.CFrame = myRoot.CFrame + flatDir * combatResistNudge
+			end
+			if h then
+				pcall(function()
+					h:ChangeState(Enum.HumanoidStateType.Physics)
+				end)
+			end
+			return
+		end
+		local now = os.clock()
+		local flatPos = Vector3.new(myRoot.Position.X, 0, myRoot.Position.Z)
+		local moved = true
+		if lastFlatPos then
+			moved = (flatPos - lastFlatPos).Magnitude > math.max(0.005, combatResistMoveEps)
+		end
+		lastFlatPos = flatPos
+		if moved then
+			stuckSince = nil
+			return
+		end
+		if not stuckSince then
+			stuckSince = now
+			return
+		end
+		if now - stuckSince < math.max(0.05, combatResistStuckTime) then
+			return
+		end
+		myRoot.AssemblyLinearVelocity = myRoot.AssemblyLinearVelocity:Lerp(targetVel, math.clamp(combatResistVelLerp, 0.1, 1))
+		if combatResistUseNudge and combatResistNudge > 0 then
+			myRoot.CFrame = myRoot.CFrame + flatDir * combatResistNudge
+		end
+		if h then
+			pcall(function()
+				h:ChangeState(Enum.HumanoidStateType.Physics)
+			end)
+		end
+		stuckSince = now - math.min(0.12, combatResistStuckTime * 0.5)
+	end)
+end
+
+function K.setCombatResistRunning()
+	if combatResistOn then
+		K.startCombatResist()
+	else
+		K.stopCombatResist()
+	end
+	if combatResistLabel then
+		combatResistLabel.Text = string.format(
+			"Movement resistance: %s | speed %.0f flyspd %s always %s dead %s",
+			combatResistOn and "ON" or "OFF",
+			combatResistSpeed,
+			combatResistUseFlySpeed and "on" or "off",
+			combatResistAlwaysMove and "on" or "off",
+			combatResistAllowDead and "on" or "off"
+		)
+	end
+end
+
 -- ========= OP combat (local, visual) =========
 function K.getOpCombatTargetPlayer()
 	-- Prefer loop-orbit selected targets if set.
@@ -2321,6 +2520,9 @@ function K.refreshMoveLabels()
 	if flyKeybindBtn then
 		local extra = flyKeybindListen and "  (press a key… Esc=cancel)" or ""
 		flyKeybindBtn.Text = "Toggle fly key: " .. flyToggleKey.Name .. " (click to change)" .. extra
+	end
+	if flyAntiStuckBtn then
+		flyAntiStuckBtn.Text = flyAntiStuckOn and "Fly anti-stuck: on" or "Fly anti-stuck: off"
 	end
 	if Labels.move.flySpd then
 		Labels.move.flySpd.Text = "Fly speed: " .. tostring(math.floor(flySpeed))
@@ -3968,6 +4170,10 @@ function K.menuFillMoveTab(pageMove)
 	end)
 	flyKeybindBtn = K.makeToggleButton(pageMove, "", function()
 		flyKeybindListen = not flyKeybindListen
+		K.refreshMoveLabels()
+	end)
+	flyAntiStuckBtn = K.makeToggleButton(pageMove, "Fly anti-stuck: on", function()
+		flyAntiStuckOn = not flyAntiStuckOn
 		K.refreshMoveLabels()
 	end)
 	Labels.move.flySpd = Instance.new("TextLabel")
@@ -5704,6 +5910,64 @@ function K.menuFillCombatTab(pageCombat)
 	end, function(v)
 		combatBoostMult = v
 	end, 0.05, K.setCombatBoostRunning)
+	combatResistLabel = Instance.new("TextLabel")
+	combatResistLabel.BackgroundTransparency = 1
+	combatResistLabel.Font = Enum.Font.Gotham
+	combatResistLabel.TextSize = 10
+	combatResistLabel.TextXAlignment = Enum.TextXAlignment.Left
+	combatResistLabel.TextColor3 = Color3.fromRGB(200, 205, 220)
+	combatResistLabel.Size = UDim2.new(1, 0, 0, 22)
+	combatResistLabel.Parent = pageCombat
+	local resistTog = K.makeToggleButton(pageCombat, "Movement resistance: off", function(btn)
+		combatResistOn = not combatResistOn
+		btn.Text = combatResistOn and "Movement resistance: on" or "Movement resistance: off"
+		K.setCombatResistRunning()
+	end)
+	numRow("Resist speed", function()
+		return combatResistSpeed
+	end, function(v)
+		combatResistSpeed = v
+	end, 2, K.setCombatResistRunning)
+	numRow("Stuck trigger (s)", function()
+		return combatResistStuckTime
+	end, function(v)
+		combatResistStuckTime = math.max(0.05, v)
+	end, 0.02, K.setCombatResistRunning)
+	numRow("Move epsilon", function()
+		return combatResistMoveEps
+	end, function(v)
+		combatResistMoveEps = math.max(0.005, v)
+	end, 0.01, K.setCombatResistRunning)
+	numRow("Nudge studs", function()
+		return combatResistNudge
+	end, function(v)
+		combatResistNudge = math.max(0, v)
+	end, 0.02, K.setCombatResistRunning)
+	numRow("Vel lerp", function()
+		return combatResistVelLerp
+	end, function(v)
+		combatResistVelLerp = math.clamp(v, 0.1, 1)
+	end, 0.05, K.setCombatResistRunning)
+	local resistNudgeTog = K.makeToggleButton(pageCombat, "Resist nudge: on", function(btn)
+		combatResistUseNudge = not combatResistUseNudge
+		btn.Text = combatResistUseNudge and "Resist nudge: on" or "Resist nudge: off"
+		K.setCombatResistRunning()
+	end)
+	local resistDeadTog = K.makeToggleButton(pageCombat, "Resist while dead: on", function(btn)
+		combatResistAllowDead = not combatResistAllowDead
+		btn.Text = combatResistAllowDead and "Resist while dead: on" or "Resist while dead: off"
+		K.setCombatResistRunning()
+	end)
+	local resistAlwaysTog = K.makeToggleButton(pageCombat, "Resist always move: on", function(btn)
+		combatResistAlwaysMove = not combatResistAlwaysMove
+		btn.Text = combatResistAlwaysMove and "Resist always move: on" or "Resist always move: off"
+		K.setCombatResistRunning()
+	end)
+	local resistFlySpeedTog = K.makeToggleButton(pageCombat, "Use fly speed in fly: on", function(btn)
+		combatResistUseFlySpeed = not combatResistUseFlySpeed
+		btn.Text = combatResistUseFlySpeed and "Use fly speed in fly: on" or "Use fly speed in fly: off"
+		K.setCombatResistRunning()
+	end)
 
 	Players.PlayerAdded:Connect(function()
 		task.defer(refreshStrafePickList)
@@ -5714,6 +5978,7 @@ function K.menuFillCombatTab(pageCombat)
 	task.defer(refreshStrafePickList)
 	task.defer(K.setCombatStrafeRunning)
 	task.defer(K.setCombatBoostRunning)
+	task.defer(K.setCombatResistRunning)
 
 	K.addSectionLabel(pageCombat, "OP COMBAT (LOCAL)")
 	K.makeToggleButton(pageCombat, "Face-lock to target: off", function(btn)
