@@ -38,7 +38,7 @@ local extraBodiesHidden = {}
 local RENDER_NAME = "AntiForceTP_RenderMax"
 local RENDER_LAST = 2147483646
 
-local hideGlow = true
+local hideGlow = false
 local minBigPartStuds = 6
 local partsWeHid = {}
 local glowListener = nil
@@ -109,12 +109,17 @@ local combatResistConn = nil
 local combatResistSpeed = 42
 local combatResistStuckTime = 0.22
 local combatResistMoveEps = 0.05
-local combatResistNudge = 0.2
+local combatResistNudge = 0.06
 local combatResistVelLerp = 0.7
 local combatResistUseNudge = true
 local combatResistAllowDead = true
 local combatResistAlwaysMove = true
 local combatResistUseFlySpeed = true
+local combatResistCounterForce = 1.2
+local combatResistAntiMoveOn = true
+local combatResistAntiMoveStrength = 0.75
+local combatResistDriftGain = 1.1
+local combatResistAntiTpBypass = true
 local combatResistLabel = nil
 
 local animScanR6PathOnly = true
@@ -394,7 +399,7 @@ function K.afterPhysics()
 	end
 
 	-- Loop TP / orbit strafe / fling move the HRP in ways anti-TP treats as "teleports" — skip undo.
-	if loopTpOn or combatStrafeOn or combatResistOn or CC.flingInProgress then
+	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress then
 		K.saveSpot(r)
 		return
 	end
@@ -487,7 +492,7 @@ function K.heartbeatAgain()
 	if not antiTpOn then
 		return
 	end
-	if loopTpOn or combatStrafeOn or combatResistOn or CC.flingInProgress then
+	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress then
 		return
 	end
 	if strongMode then
@@ -507,7 +512,7 @@ function K.drawFrameAgain()
 	if not antiTpOn or not savedPivot then
 		return
 	end
-	if loopTpOn or combatStrafeOn or combatResistOn or CC.flingInProgress then
+	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress then
 		return
 	end
 	local r = K.getRoot()
@@ -1649,7 +1654,8 @@ function K.startCombatResist()
 	K.stopCombatResist()
 	local stuckSince = nil
 	local lastFlatPos = nil
-	combatResistConn = RunService.RenderStepped:Connect(function()
+	local desiredFlatPos = nil
+	combatResistConn = RunService.Heartbeat:Connect(function(dt)
 		if not combatResistOn then
 			stuckSince = nil
 			lastFlatPos = nil
@@ -1660,12 +1666,19 @@ function K.startCombatResist()
 		if not myRoot then
 			stuckSince = nil
 			lastFlatPos = nil
+			desiredFlatPos = nil
 			return
 		end
 		if h and h.Health <= 0 and not combatResistAllowDead then
 			stuckSince = nil
 			lastFlatPos = nil
+			desiredFlatPos = nil
 			return
+		end
+		if h then
+			-- Keep upright; avoid "fall over" feel from forced physics state changes.
+			h.PlatformStand = false
+			h.AutoRotate = true
 		end
 		local cam = K.getCam()
 		local flatDir = Vector3.zero
@@ -1707,34 +1720,54 @@ function K.startCombatResist()
 		if flatDir.Magnitude < 0.001 and math.abs(moveY) < 0.001 then
 			stuckSince = nil
 			lastFlatPos = Vector3.new(myRoot.Position.X, 0, myRoot.Position.Z)
+			desiredFlatPos = nil
+			if combatResistAntiMoveOn then
+				local antiA = combatResistAntiMoveStrength * combatResistVelLerp
+				local curV = myRoot.AssemblyLinearVelocity
+				myRoot.AssemblyLinearVelocity = Vector3.new(curV.X * (1 - antiA), curV.Y, curV.Z * (1 - antiA))
+			end
 			return
 		end
 		if flatDir.Magnitude > 0.001 then
 			flatDir = flatDir.Unit
 		end
-		local pushSpeed = math.max(4, combatResistUseFlySpeed and flyOn and flySpeed or combatResistSpeed)
+		local pushSpeed = combatResistUseFlySpeed and flyOn and flySpeed or combatResistSpeed
+		local stepDt = math.min(math.max(dt or 1 / 60, 1 / 240), 1 / 20)
 		local desiredY = myRoot.AssemblyLinearVelocity.Y
 		if flyOn and math.abs(moveY) > 0.001 then
 			desiredY = moveY * pushSpeed
 		end
-		local targetVel = Vector3.new(flatDir.X * pushSpeed, desiredY, flatDir.Z * pushSpeed)
+		local curPosFlat = Vector3.new(myRoot.Position.X, 0, myRoot.Position.Z)
+		if not desiredFlatPos then
+			desiredFlatPos = curPosFlat
+		end
+		desiredFlatPos += flatDir * pushSpeed * stepDt
+		local drift = desiredFlatPos - curPosFlat
+		local maxDrift = pushSpeed * 0.45
+		if drift.Magnitude > maxDrift and drift.Magnitude > 0 then
+			drift = drift.Unit * maxDrift
+		end
+		local driftVel = drift * (combatResistDriftGain / math.max(stepDt, 1 / 240))
+		local baseFlatVel = Vector3.new(flatDir.X * pushSpeed, 0, flatDir.Z * pushSpeed)
+		local targetFlatVel = baseFlatVel + driftVel * combatResistCounterForce
+		local maxFlatVel = pushSpeed * (1 + combatResistCounterForce)
+		if targetFlatVel.Magnitude > maxFlatVel and targetFlatVel.Magnitude > 0 then
+			targetFlatVel = targetFlatVel.Unit * maxFlatVel
+		end
+		local targetVel = Vector3.new(targetFlatVel.X, desiredY, targetFlatVel.Z)
 		if combatResistAlwaysMove then
-			myRoot.AssemblyLinearVelocity = myRoot.AssemblyLinearVelocity:Lerp(targetVel, math.clamp(combatResistVelLerp, 0.1, 1))
-			if combatResistUseNudge and combatResistNudge > 0 and flatDir.Magnitude > 0.001 then
-				myRoot.CFrame = myRoot.CFrame + flatDir * combatResistNudge
-			end
 			if h then
-				pcall(function()
-					h:ChangeState(Enum.HumanoidStateType.Physics)
-				end)
+				h:Move(Vector3.new(flatDir.X, 0, flatDir.Z), true)
 			end
+			local curV = myRoot.AssemblyLinearVelocity
+			myRoot.AssemblyLinearVelocity = curV:Lerp(targetVel, combatResistVelLerp)
 			return
 		end
 		local now = os.clock()
 		local flatPos = Vector3.new(myRoot.Position.X, 0, myRoot.Position.Z)
 		local moved = true
 		if lastFlatPos then
-			moved = (flatPos - lastFlatPos).Magnitude > math.max(0.005, combatResistMoveEps)
+			moved = (flatPos - lastFlatPos).Magnitude > combatResistMoveEps
 		end
 		lastFlatPos = flatPos
 		if moved then
@@ -1745,19 +1778,14 @@ function K.startCombatResist()
 			stuckSince = now
 			return
 		end
-		if now - stuckSince < math.max(0.05, combatResistStuckTime) then
+		if now - stuckSince < combatResistStuckTime then
 			return
 		end
-		myRoot.AssemblyLinearVelocity = myRoot.AssemblyLinearVelocity:Lerp(targetVel, math.clamp(combatResistVelLerp, 0.1, 1))
-		if combatResistUseNudge and combatResistNudge > 0 then
-			myRoot.CFrame = myRoot.CFrame + flatDir * combatResistNudge
-		end
 		if h then
-			pcall(function()
-				h:ChangeState(Enum.HumanoidStateType.Physics)
-			end)
+			h:Move(Vector3.new(flatDir.X, 0, flatDir.Z), true)
 		end
-		stuckSince = now - math.min(0.12, combatResistStuckTime * 0.5)
+		myRoot.AssemblyLinearVelocity = myRoot.AssemblyLinearVelocity:Lerp(targetVel, combatResistVelLerp)
+		stuckSince = now - (combatResistStuckTime * 0.5)
 	end)
 end
 
@@ -1769,11 +1797,13 @@ function K.setCombatResistRunning()
 	end
 	if combatResistLabel then
 		combatResistLabel.Text = string.format(
-			"Movement resistance: %s | speed %.0f flyspd %s always %s dead %s",
+			"Movement resistance: %s | speed %.0f anti-move %s(%.2f) force %.2f drift %.2f dead %s",
 			combatResistOn and "ON" or "OFF",
 			combatResistSpeed,
-			combatResistUseFlySpeed and "on" or "off",
-			combatResistAlwaysMove and "on" or "off",
+			combatResistAntiMoveOn and "on" or "off",
+			combatResistAntiMoveStrength,
+			combatResistCounterForce,
+			combatResistDriftGain,
 			combatResistAllowDead and "on" or "off"
 		)
 	end
@@ -5931,23 +5961,38 @@ function K.menuFillCombatTab(pageCombat)
 	numRow("Stuck trigger (s)", function()
 		return combatResistStuckTime
 	end, function(v)
-		combatResistStuckTime = math.max(0.05, v)
+		combatResistStuckTime = v
 	end, 0.02, K.setCombatResistRunning)
 	numRow("Move epsilon", function()
 		return combatResistMoveEps
 	end, function(v)
-		combatResistMoveEps = math.max(0.005, v)
+		combatResistMoveEps = v
 	end, 0.01, K.setCombatResistRunning)
 	numRow("Nudge studs", function()
 		return combatResistNudge
 	end, function(v)
-		combatResistNudge = math.max(0, v)
+		combatResistNudge = v
 	end, 0.02, K.setCombatResistRunning)
 	numRow("Vel lerp", function()
 		return combatResistVelLerp
 	end, function(v)
-		combatResistVelLerp = math.clamp(v, 0.1, 1)
+		combatResistVelLerp = v
 	end, 0.05, K.setCombatResistRunning)
+	numRow("Counter force", function()
+		return combatResistCounterForce
+	end, function(v)
+		combatResistCounterForce = v
+	end, 0.1, K.setCombatResistRunning)
+	numRow("Anti-move str", function()
+		return combatResistAntiMoveStrength
+	end, function(v)
+		combatResistAntiMoveStrength = v
+	end, 0.05, K.setCombatResistRunning)
+	numRow("Drift gain", function()
+		return combatResistDriftGain
+	end, function(v)
+		combatResistDriftGain = v
+	end, 0.1, K.setCombatResistRunning)
 	local resistNudgeTog = K.makeToggleButton(pageCombat, "Resist nudge: on", function(btn)
 		combatResistUseNudge = not combatResistUseNudge
 		btn.Text = combatResistUseNudge and "Resist nudge: on" or "Resist nudge: off"
@@ -5966,6 +6011,16 @@ function K.menuFillCombatTab(pageCombat)
 	local resistFlySpeedTog = K.makeToggleButton(pageCombat, "Use fly speed in fly: on", function(btn)
 		combatResistUseFlySpeed = not combatResistUseFlySpeed
 		btn.Text = combatResistUseFlySpeed and "Use fly speed in fly: on" or "Use fly speed in fly: off"
+		K.setCombatResistRunning()
+	end)
+	local resistAntiMoveTog = K.makeToggleButton(pageCombat, "Resist external move: on", function(btn)
+		combatResistAntiMoveOn = not combatResistAntiMoveOn
+		btn.Text = combatResistAntiMoveOn and "Resist external move: on" or "Resist external move: off"
+		K.setCombatResistRunning()
+	end)
+	local resistAntiTpTog = K.makeToggleButton(pageCombat, "Resist anti-TP bypass: on", function(btn)
+		combatResistAntiTpBypass = not combatResistAntiTpBypass
+		btn.Text = combatResistAntiTpBypass and "Resist anti-TP bypass: on" or "Resist anti-TP bypass: off"
 		K.setCombatResistRunning()
 	end)
 
