@@ -25,8 +25,12 @@ local jumpsCount = true
 local maxJumpStuds = 22
 
 local savedPivot = nil
+local savedPivotPrev = nil
 local savedSpeed = Vector3.zero
 local placeBeforePhysics = nil
+local antiTpLastUndo = 0
+local antiTpUndoCooldown = 0.2
+local antiTpMoveGrace = 0.65
 
 local hookAfterPhysics = nil
 local hookHeartbeat = nil
@@ -345,31 +349,79 @@ function K.moveLooksNormal(move, limit)
 	return false
 end
 
-function K.putMeBack()
+function K.hasMoveIntent(humanoid)
+	if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
+		return true
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then
+		return true
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then
+		return true
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then
+		return true
+	end
+	if flyOn and (UserInputService:IsKeyDown(Enum.KeyCode.Space) or UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.C)) then
+		return true
+	end
+	if humanoid and humanoid.MoveDirection.Magnitude > 0.06 then
+		return true
+	end
+	return false
+end
+
+function K.putMeBack(restorePivot)
 	local char = me.Character
 	local rootPart = K.getRoot()
-	if savedPivot and char and rootPart then
-		char:PivotTo(savedPivot)
+	local pivot = restorePivot or savedPivot
+	if pivot and char and rootPart then
+		char:PivotTo(pivot)
 		rootPart.AssemblyLinearVelocity = savedSpeed
 		rootPart.AssemblyAngularVelocity = Vector3.zero
+		antiTpLastUndo = os.clock()
 	end
 end
 
 function K.shouldUndo(rootPart, humanoid, here, limit)
-	if not savedPivot or humanoid.Health <= 0 then
+	if humanoid.Health <= 0 then
 		return false
 	end
-	local move = here - savedPivot.Position
-	if K.moveLooksNormal(move, limit) then
+	local movingIntent = K.hasMoveIntent(humanoid)
+	if movingIntent and (os.clock() - antiTpLastUndo) < antiTpMoveGrace then
 		return false
 	end
-	K.putMeBack()
+	local activeLimit = movingIntent and (limit * (flyOn and 2.8 or 2.1)) or limit
+	local restorePivot = savedPivot
+	local moveLooksBad = false
+	if restorePivot then
+		local move = here - restorePivot.Position
+		moveLooksBad = not K.moveLooksNormal(move, activeLimit)
+	end
+	if (not moveLooksBad) and savedPivotPrev then
+		local movePrev = here - savedPivotPrev.Position
+		if not K.moveLooksNormal(movePrev, activeLimit * 0.9) then
+			restorePivot = savedPivotPrev
+			moveLooksBad = true
+		end
+	end
+	if movingIntent and moveLooksBad and restorePivot then
+		local moveNow = here - restorePivot.Position
+		if moveNow.Magnitude <= activeLimit * 1.35 then
+			return false
+		end
+	end
+	if not moveLooksBad or not restorePivot then
+		return false
+	end
+	K.putMeBack(restorePivot)
 	return true
 end
 
 function K.saveSpot(rootPart)
 	local char = me.Character
 	if char then
+		savedPivotPrev = savedPivot
 		savedPivot = char:GetPivot()
 	end
 	savedSpeed = rootPart.AssemblyLinearVelocity
@@ -426,6 +478,10 @@ function K.afterPhysics()
 	placeBeforePhysics = nil
 
 	if K.shouldUndo(r, h, pos, limit) then
+		return
+	end
+
+	if os.clock() - antiTpLastUndo < antiTpUndoCooldown then
 		return
 	end
 
@@ -539,6 +595,7 @@ function K.stopHooks()
 		hookBeforePhysics = nil
 	end
 	savedPivot = nil
+	savedPivotPrev = nil
 	placeBeforePhysics = nil
 	if duplicateListener then
 		duplicateListener:Disconnect()
@@ -556,6 +613,7 @@ end
 function K.startHooks()
 	K.stopHooks()
 	savedPivot = nil
+	savedPivotPrev = nil
 	if RunService.PreSimulation then
 		hookBeforePhysics = RunService.PreSimulation:Connect(K.beforePhysics)
 	end
