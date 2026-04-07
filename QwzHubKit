@@ -2400,6 +2400,60 @@ function K.playMacro(idx)
 			end)
 		end
 	end
+	local function simulateNumberKey(slotIdx)
+		local kp = (typeof(keypress) == "function") and keypress or nil
+		local kr = (typeof(keyrelease) == "function") and keyrelease or nil
+		local code
+		if slotIdx == 1 then
+			code = Enum.KeyCode.One
+		elseif slotIdx == 2 then
+			code = Enum.KeyCode.Two
+		elseif slotIdx == 3 then
+			code = Enum.KeyCode.Three
+		elseif slotIdx == 4 then
+			code = Enum.KeyCode.Four
+		elseif slotIdx == 5 then
+			code = Enum.KeyCode.Five
+		elseif slotIdx == 6 then
+			code = Enum.KeyCode.Six
+		elseif slotIdx == 7 then
+			code = Enum.KeyCode.Seven
+		elseif slotIdx == 8 then
+			code = Enum.KeyCode.Eight
+		elseif slotIdx == 9 then
+			code = Enum.KeyCode.Nine
+		end
+		if code then
+			-- Prefer Roblox VirtualInputManager (reliably triggers InputBegan handlers in many exploit environments).
+			local vim
+			pcall(function()
+				vim = game:GetService("VirtualInputManager")
+			end)
+			if vim and vim.SendKeyEvent then
+				local ok = pcall(function()
+					vim:SendKeyEvent(true, code, false, game)
+					task.wait(0.08)
+					vim:SendKeyEvent(false, code, false, game)
+				end)
+				if ok then
+					return
+				end
+			end
+			-- Next: exploit-provided key simulation, if available.
+			if kp and kr then
+				local ok = pcall(function()
+					kp(code)
+					task.wait(0.08)
+					kr(code)
+				end)
+				if ok then
+					return
+				end
+			end
+		end
+		-- Final fallback: try equipping the corresponding tool slot.
+		selectToolSlot(slotIdx)
+	end
 	K.stopMacroPlayback(idx)
 	Macro.playConns[idx] = task.spawn(function()
 		local function stopMovePulse()
@@ -2501,23 +2555,23 @@ function K.playMacro(idx)
 					end)
 				end
 			elseif e.action == "key1" then
-				selectToolSlot(1)
+				simulateNumberKey(1)
 			elseif e.action == "key2" then
-				selectToolSlot(2)
+				simulateNumberKey(2)
 			elseif e.action == "key3" then
-				selectToolSlot(3)
+				simulateNumberKey(3)
 			elseif e.action == "key4" then
-				selectToolSlot(4)
+				simulateNumberKey(4)
 			elseif e.action == "key5" then
-				selectToolSlot(5)
+				simulateNumberKey(5)
 			elseif e.action == "key6" then
-				selectToolSlot(6)
+				simulateNumberKey(6)
 			elseif e.action == "key7" then
-				selectToolSlot(7)
+				simulateNumberKey(7)
 			elseif e.action == "key8" then
-				selectToolSlot(8)
+				simulateNumberKey(8)
 			elseif e.action == "key9" then
-				selectToolSlot(9)
+				simulateNumberKey(9)
 			end
 		end
 		stopMovePulse()
