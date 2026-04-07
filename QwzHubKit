@@ -193,6 +193,7 @@ local ESP = {
 	menuTabTextSize = 10,
 	menuHideTabScrollbar = false,
 	menuAlwaysTop = false,
+	mobileQuickButtonsOn = true,
 }
 
 -- ========= Macros =========
@@ -225,6 +226,7 @@ local CC = {
 	animSlideDown = 0,
 	animSlideDuration = 1.25,
 	animSlideEase = true,
+	animSlideUseCamera = false,
 	animSlideAnimSpeed = 1,
 	animSlideTrack = nil,
 	animSlideConn = nil,
@@ -255,6 +257,7 @@ local CC = {
 
 -- ========= UI refs =========
 local panel
+local mobileQuickFrame
 local textStatus
 local textSnap
 local btnMain
@@ -1890,6 +1893,69 @@ function K.makeToggleButton(scroll, text, callback)
 	return b
 end
 
+function K.buildMobileQuickButtons(screen)
+	if not UserInputService.TouchEnabled then
+		return
+	end
+	if mobileQuickFrame and mobileQuickFrame.Parent then
+		mobileQuickFrame:Destroy()
+		mobileQuickFrame = nil
+	end
+	local inset = GuiService:GetGuiInset()
+	local host = Instance.new("Frame")
+	host.Name = "MobileQuickActions"
+	host.BackgroundTransparency = 1
+	host.BorderSizePixel = 0
+	host.Size = UDim2.fromOffset(38, 170)
+	host.Position = UDim2.new(1, -48 - inset.X, 0, 12 + inset.Y)
+	host.ZIndex = 25
+	host.Visible = ESP.mobileQuickButtonsOn
+	host.Parent = screen
+	local lay = Instance.new("UIListLayout")
+	lay.FillDirection = Enum.FillDirection.Vertical
+	lay.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	lay.VerticalAlignment = Enum.VerticalAlignment.Top
+	lay.Padding = UDim.new(0, 4)
+	lay.Parent = host
+	local function addMiniButton(label, cb)
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.fromOffset(34, 30)
+		b.BackgroundColor3 = Color3.fromRGB(35, 42, 64)
+		b.BorderSizePixel = 0
+		b.Font = Enum.Font.GothamBold
+		b.TextSize = 11
+		b.TextColor3 = Color3.fromRGB(235, 240, 255)
+		b.Text = label
+		b.AutoButtonColor = true
+		b.ZIndex = 26
+		b.Parent = host
+		K.roundCorners(b, 8)
+		b.Activated:Connect(cb)
+	end
+	addMiniButton("UI", function()
+		if panel then
+			panel.Visible = not panel.Visible
+		end
+	end)
+	addMiniButton("FLY", function()
+		flyOn = not flyOn
+		K.setFlyRunning()
+		K.refreshMoveLabels()
+	end)
+	addMiniButton("RUN", function()
+		CC.runAnimSlide()
+	end)
+	addMiniButton("STP", function()
+		CC.stopAnimSlide()
+	end)
+	addMiniButton("FACE", function()
+		ESP.opFaceLockOn = not ESP.opFaceLockOn
+		K.setOpCombatRunning()
+		K.refreshOpCombatUi()
+	end)
+	mobileQuickFrame = host
+end
+
 function K.populateAnimScanList()
 	if not animScanScroll then
 		return
@@ -2880,18 +2946,32 @@ function CC.runAnimSlide()
 	if not (hum and hrp) then
 		return
 	end
-	local look = hrp.CFrame.LookVector
-	local right = hrp.CFrame.RightVector
-	local up = Vector3.yAxis
-	local off = look * (CC.animSlideFwd - CC.animSlideBack)
-		+ right * (CC.animSlideRight - CC.animSlideLeft)
-		+ up * (CC.animSlideUp - CC.animSlideDown)
+	local function slideOffsetFromBasis(rootPart)
+		local look = rootPart.CFrame.LookVector
+		local right = rootPart.CFrame.RightVector
+		if CC.animSlideUseCamera then
+			local cam = Workspace.CurrentCamera
+			if cam then
+				local camLook = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+				local camRight = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z)
+				if camLook.Magnitude > 1e-4 then
+					look = camLook.Unit
+				end
+				if camRight.Magnitude > 1e-4 then
+					right = camRight.Unit
+				end
+			end
+		end
+		return look * (CC.animSlideFwd - CC.animSlideBack)
+			+ right * (CC.animSlideRight - CC.animSlideLeft)
+			+ Vector3.yAxis * (CC.animSlideUp - CC.animSlideDown)
+	end
+	local off = slideOffsetFromBasis(hrp)
 	local dist = off.Magnitude
 	if dist < 0.08 then
 		warn("[Qwz kit] Anim slide: set at least one axis distance > 0.")
 		return
 	end
-	local dir = off.Unit
 	local dur = CC.animSlideDuration
 	local spd = CC.animSlideAnimSpeed
 	local startCf = hrp.CFrame
@@ -2916,6 +2996,7 @@ function CC.runAnimSlide()
 		end
 	end
 	local t0 = os.clock()
+	local prevAlpha = 0
 	CC.animSlideConn = RunService.RenderStepped:Connect(function()
 		local hrp2 = K.getRoot()
 		if not hrp2 then
@@ -2924,17 +3005,26 @@ function CC.runAnimSlide()
 		end
 		local t = (os.clock() - t0) * spd
 		if t >= dur then
-			local endPos = startCf.Position + dir * dist
-			hrp2.CFrame = CFrame.new(endPos) * CFrame.fromOrientation(ox, oy, oz)
-			CC.stopAnimSlide()
-			return
+			t = dur
 		end
 		local alpha = t / dur
 		if CC.animSlideEase then
 			alpha = alpha * alpha * (3 - 2 * alpha)
 		end
-		local pos = startCf.Position + dir * (dist * alpha)
-		hrp2.CFrame = CFrame.new(pos) * CFrame.fromOrientation(ox, oy, oz)
+		local deltaAlpha = math.max(0, alpha - prevAlpha)
+		prevAlpha = alpha
+		local deltaDist = dist * deltaAlpha
+		if deltaDist > 1e-5 then
+			local stepOff = slideOffsetFromBasis(hrp2)
+			if stepOff.Magnitude > 1e-5 then
+				local pos = hrp2.Position + stepOff.Unit * deltaDist
+				hrp2.CFrame = CFrame.new(pos) * CFrame.fromOrientation(ox, oy, oz)
+			end
+		end
+		if t >= dur then
+			CC.stopAnimSlide()
+			return
+		end
 	end)
 end
 
@@ -3429,6 +3519,13 @@ function K.buildCreateTab(pageCreate)
 	axisBlock("Left", "animSlideLeft", 1)
 	axisBlock("Up", "animSlideUp", 1)
 	axisBlock("Down", "animSlideDown", 1)
+	local camDirBtn = K.makeToggleButton(pageCreate, "Slide uses camera direction: off", function(btn)
+		CC.animSlideUseCamera = not CC.animSlideUseCamera
+		btn.Text = CC.animSlideUseCamera and "Slide uses camera direction: on"
+			or "Slide uses camera direction: off"
+	end)
+	camDirBtn.Text = CC.animSlideUseCamera and "Slide uses camera direction: on"
+		or "Slide uses camera direction: off"
 
 	local durRow = Instance.new("Frame")
 	durRow.BackgroundTransparency = 1
@@ -5891,6 +5988,15 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		panel.Position = UDim2.new(0, 12 + inset.X, 0.5, -panel.AbsoluteSize.Y / 2)
 	end)
 	resetPosBtn.BackgroundColor3 = Color3.fromRGB(52, 66, 96)
+	local mobileQuickBtn = K.makeToggleButton(pageCustom, "Mobile quick buttons: on", function(btn)
+		ESP.mobileQuickButtonsOn = not ESP.mobileQuickButtonsOn
+		btn.Text = ESP.mobileQuickButtonsOn and "Mobile quick buttons: on" or "Mobile quick buttons: off"
+		if mobileQuickFrame and mobileQuickFrame.Parent then
+			mobileQuickFrame.Visible = ESP.mobileQuickButtonsOn
+		end
+	end)
+	mobileQuickBtn.Text = ESP.mobileQuickButtonsOn and "Mobile quick buttons: on" or "Mobile quick buttons: off"
+	mobileQuickBtn.BackgroundColor3 = Color3.fromRGB(52, 66, 96)
 
 	local resetBtn = K.makeToggleButton(pageCustom, "Reset all customization settings", function()
 		ESP.menuScale = 1
@@ -5909,6 +6015,7 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		ESP.menuTabTextSize = 10
 		ESP.menuHideTabScrollbar = false
 		ESP.menuAlwaysTop = false
+		ESP.mobileQuickButtonsOn = true
 		applyMenuVisuals()
 		applyRainbow()
 		local inset = GuiService:GetGuiInset()
@@ -5919,6 +6026,10 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		hideScrollBtn.Text = "Hide tab scrollbar: off"
 		topBtn.Text = "Menu always on top: off"
 		rainbowBtn.Text = "Rainbow border: off"
+		mobileQuickBtn.Text = "Mobile quick buttons: on"
+		if mobileQuickFrame and mobileQuickFrame.Parent then
+			mobileQuickFrame.Visible = true
+		end
 		for _, r in ipairs(numRows) do
 			r.sync()
 		end
@@ -6371,6 +6482,7 @@ end
 	K.refreshMoveLabels()
 	K.refreshWorldLabels()
 	K.refreshClientLabels()
+	K.buildMobileQuickButtons(screen)
 
 	return screen
 end
