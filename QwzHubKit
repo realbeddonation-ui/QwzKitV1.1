@@ -1,3 +1,9 @@
+--[[
+	Tester toolkit — client-side QA helpers.
+	Place in StarterPlayer > StarterPlayerScripts.
+	− (minus) or keypad − = show/hide · header − button closes the panel.
+]]
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -2362,6 +2368,38 @@ function K.playMacro(idx)
 	if not mac or not mac.on or type(mac.inputs) ~= "table" or #mac.inputs == 0 then
 		return
 	end
+	local function selectToolSlot(slotIdx)
+		if not slotIdx or slotIdx < 1 then
+			return
+		end
+		local char = me.Character
+		local bp = me:FindFirstChildOfClass("Backpack")
+		local tools = {}
+		if char then
+			for _, ch in ipairs(char:GetChildren()) do
+				if ch:IsA("Tool") then
+					table.insert(tools, ch)
+				end
+			end
+		end
+		if bp then
+			for _, ch in ipairs(bp:GetChildren()) do
+				if ch:IsA("Tool") then
+					table.insert(tools, ch)
+				end
+			end
+		end
+		local tool = tools[slotIdx]
+		if not tool then
+			return
+		end
+		local h = K.getHumanoid()
+		if h then
+			pcall(function()
+				h:EquipTool(tool)
+			end)
+		end
+	end
 	K.stopMacroPlayback(idx)
 	Macro.playConns[idx] = task.spawn(function()
 		local function stopMovePulse()
@@ -2462,6 +2500,24 @@ function K.playMacro(idx)
 						tool.Activated:Fire()
 					end)
 				end
+			elseif e.action == "key1" then
+				selectToolSlot(1)
+			elseif e.action == "key2" then
+				selectToolSlot(2)
+			elseif e.action == "key3" then
+				selectToolSlot(3)
+			elseif e.action == "key4" then
+				selectToolSlot(4)
+			elseif e.action == "key5" then
+				selectToolSlot(5)
+			elseif e.action == "key6" then
+				selectToolSlot(6)
+			elseif e.action == "key7" then
+				selectToolSlot(7)
+			elseif e.action == "key8" then
+				selectToolSlot(8)
+			elseif e.action == "key9" then
+				selectToolSlot(9)
 			end
 		end
 		stopMovePulse()
@@ -6257,6 +6313,27 @@ UserInputService.InputBegan:Connect(function(input, gameUsedIt)
 	end
 	if Macro.recording and input.KeyCode == Enum.KeyCode.Space then
 		K.recordInput("jump")
+	end
+	if Macro.recording then
+		if input.KeyCode == Enum.KeyCode.One then
+			K.recordInput("key1")
+		elseif input.KeyCode == Enum.KeyCode.Two then
+			K.recordInput("key2")
+		elseif input.KeyCode == Enum.KeyCode.Three then
+			K.recordInput("key3")
+		elseif input.KeyCode == Enum.KeyCode.Four then
+			K.recordInput("key4")
+		elseif input.KeyCode == Enum.KeyCode.Five then
+			K.recordInput("key5")
+		elseif input.KeyCode == Enum.KeyCode.Six then
+			K.recordInput("key6")
+		elseif input.KeyCode == Enum.KeyCode.Seven then
+			K.recordInput("key7")
+		elseif input.KeyCode == Enum.KeyCode.Eight then
+			K.recordInput("key8")
+		elseif input.KeyCode == Enum.KeyCode.Nine then
+			K.recordInput("key9")
+		end
 	end
 	if K.handleMacroKeyboardInput(input) then
 		return
