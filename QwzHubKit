@@ -1,9 +1,3 @@
---[[
-	Tester toolkit — client-side QA helpers.
-	Place in StarterPlayer > StarterPlayerScripts.
-	− (minus) or keypad − = show/hide · header − button closes the panel.
-]]
-
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -31,6 +25,7 @@ local placeBeforePhysics = nil
 local antiTpLastUndo = 0
 local antiTpUndoCooldown = 0.2
 local antiTpMoveGrace = 0.65
+local touchScrollDragging = setmetatable({}, { __mode = "k" })
 
 local hookAfterPhysics = nil
 local hookHeartbeat = nil
@@ -219,6 +214,8 @@ local ESP = {
 	menuHideTabScrollbar = false,
 	menuAlwaysTop = false,
 	mobileQuickButtonsOn = true,
+	flyTouchUp = false,
+	flyTouchDown = false,
 }
 
 -- ========= Macros =========
@@ -769,6 +766,8 @@ function K.stopFly()
 		flyConn:Disconnect()
 		flyConn = nil
 	end
+	ESP.flyTouchUp = false
+	ESP.flyTouchDown = false
 	local h = K.getHumanoid()
 	if h then
 		h.PlatformStand = false
@@ -808,13 +807,16 @@ function K.startFly()
 		if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += right end
 		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
 		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.C) then dir -= Vector3.yAxis end
-		if dir.Magnitude < 0.01 and isTouch then
+		if isTouch then
 			-- Mobile joystick writes world-space MoveDirection through the player module.
 			local md = hum.MoveDirection
 			local flat = Vector3.new(md.X, 0, md.Z)
 			if flat.Magnitude > 0.01 then
 				dir += flat.Unit
 			end
+			if ESP.flyTouchUp then dir += Vector3.yAxis end
+			if ESP.flyTouchDown then dir -= Vector3.yAxis end
+			if hum.Jump then dir += Vector3.yAxis end
 		end
 		local anyKeyPressed = dir.Magnitude > 0.01
 		if anyKeyPressed then
@@ -1170,6 +1172,54 @@ end
 -- ========= Combat QA =========
 function K.getFocusedTextBox()
 	return UserInputService:GetFocusedTextBox()
+end
+
+function K.enableTouchScroll(scroll)
+	if not scroll or not UserInputService.TouchEnabled then
+		return
+	end
+	scroll.Active = true
+	scroll.Selectable = true
+	scroll.ScrollingEnabled = true
+	local dragTouch = nil
+	local startPos = nil
+	local startCanvas = nil
+	scroll.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		dragTouch = input
+		startPos = input.Position
+		startCanvas = scroll.CanvasPosition
+		touchScrollDragging[scroll] = false
+	end)
+	scroll.InputChanged:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		if input ~= dragTouch or not startPos or not startCanvas then
+			return
+		end
+		local delta = input.Position - startPos
+		if math.abs(delta.Y) > 6 then
+			touchScrollDragging[scroll] = true
+		end
+		scroll.CanvasPosition = Vector2.new(startCanvas.X, math.max(0, startCanvas.Y - delta.Y))
+	end)
+	scroll.InputEnded:Connect(function(input)
+		if input == dragTouch then
+			dragTouch = nil
+			startPos = nil
+			startCanvas = nil
+			task.defer(function()
+				touchScrollDragging[scroll] = false
+			end)
+		end
+	end)
+end
+
+function K.isTouchScrolling(scroll)
+	return touchScrollDragging[scroll] == true
 end
 
 function K.parseCsvLower(s)
@@ -2214,7 +2264,7 @@ function K.buildMobileQuickButtons(screen)
 	host.Name = "MobileQuickActions"
 	host.BackgroundTransparency = 1
 	host.BorderSizePixel = 0
-	host.Size = UDim2.fromOffset(38, 170)
+	host.Size = UDim2.fromOffset(38, 236)
 	host.Position = UDim2.new(1, -48 - inset.X, 0, 12 + inset.Y)
 	host.ZIndex = 25
 	host.Visible = ESP.mobileQuickButtonsOn
@@ -2239,6 +2289,7 @@ function K.buildMobileQuickButtons(screen)
 		b.Parent = host
 		K.roundCorners(b, 8)
 		b.Activated:Connect(cb)
+		return b
 	end
 	addMiniButton("UI", function()
 		if panel then
@@ -2249,6 +2300,28 @@ function K.buildMobileQuickButtons(screen)
 		flyOn = not flyOn
 		K.setFlyRunning()
 		K.refreshMoveLabels()
+	end)
+	local upBtn = addMiniButton("UP", function() end)
+	upBtn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			ESP.flyTouchUp = true
+		end
+	end)
+	upBtn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			ESP.flyTouchUp = false
+		end
+	end)
+	local downBtn = addMiniButton("DN", function() end)
+	downBtn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			ESP.flyTouchDown = true
+		end
+	end)
+	downBtn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			ESP.flyTouchDown = false
+		end
 	end)
 	addMiniButton("RUN", function()
 		CC.runAnimSlide()
@@ -2291,7 +2364,7 @@ function K.populateAnimScanList()
 		row.BackgroundColor3 = Color3.fromRGB(32, 36, 52)
 		row.TextXAlignment = Enum.TextXAlignment.Left
 		row.Font = Enum.Font.Gotham
-		row.TextSize = 11
+		row.TextSize = UserInputService.TouchEnabled and 13 or 11
 		row.TextColor3 = Color3.new(1, 1, 1)
 		row.BorderSizePixel = 0
 		local shortId = anim.AnimationId
@@ -2301,7 +2374,10 @@ function K.populateAnimScanList()
 		row.Text = "  " .. anim.Name .. "  |  " .. shortId
 		row.Parent = animScanScroll
 		K.roundCorners(row, 6)
-		row.MouseButton1Click:Connect(function()
+		row.Activated:Connect(function()
+			if K.isTouchScrolling(animScanScroll) then
+				return
+			end
 			animScanSelected = anim
 			if animSelectionLabel then
 				animSelectionLabel.Text = "Selected: "
@@ -4244,6 +4320,7 @@ function K.makeMenuScrollPage(name, contentHolder)
 	scroll.Selectable = true
 	scroll.ClipsDescendants = true
 	scroll.Parent = contentHolder
+	K.enableTouchScroll(scroll)
 
 	local pad = Instance.new("UIPadding", scroll)
 	pad.PaddingLeft = UDim.new(0, 14)
@@ -5570,13 +5647,19 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	animScanScroll = Instance.new("ScrollingFrame")
 	animScanScroll.BackgroundColor3 = Color3.fromRGB(18, 20, 34)
 	animScanScroll.BorderSizePixel = 0
-	animScanScroll.Size = UDim2.new(1,0,0,120)
-	animScanScroll.ScrollBarThickness = 3
+	animScanScroll.Size = UserInputService.TouchEnabled and UDim2.new(1, 0, 0, 180) or UDim2.new(1, 0, 0, 120)
+	animScanScroll.ScrollBarThickness = UserInputService.TouchEnabled and 6 or 3
 	animScanScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 130, 220)
 	animScanScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	animScanScroll.CanvasSize = UDim2.new()
+	animScanScroll.Active = true
+	animScanScroll.Selectable = true
+	animScanScroll.ScrollingEnabled = true
+	animScanScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+	animScanScroll.ElasticBehavior = Enum.ElasticBehavior.Never
 	animScanScroll.Parent = pageCombat
 	K.roundCorners(animScanScroll, 8)
+	K.enableTouchScroll(animScanScroll)
 	local animScanListLayout = Instance.new("UIListLayout", animScanScroll)
 	animScanListLayout.Padding = UDim.new(0, 4)
 	animScanListLayout.SortOrder = Enum.SortOrder.LayoutOrder
