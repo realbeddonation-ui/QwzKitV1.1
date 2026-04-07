@@ -1,9 +1,3 @@
---[[
-	Tester toolkit — client-side QA helpers.
-	Place in StarterPlayer > StarterPlayerScripts.
-	− (minus) or keypad − = show/hide · header − button closes the panel.
-]]
-
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -78,7 +72,7 @@ local loopTpStudsBehind = 7
 local loopTpYOffset = 0
 local loopTpInterval = 0.035
 local loopTpMaxDist = 120
-local loopTpJitter = 0.35
+local loopTpJitter = 0
 local loopTpFaceAway = true
 local loopTpOnlyIfVisible = false
 local loopTpLastClock = 0
@@ -2788,8 +2782,8 @@ function CC.runAnimSlide()
 		return
 	end
 	local dir = off.Unit
-	local dur = math.clamp(CC.animSlideDuration, 0.12, 30)
-	local spd = math.clamp(CC.animSlideAnimSpeed, 0.05, 4)
+	local dur = CC.animSlideDuration
+	local spd = CC.animSlideAnimSpeed
 	local startCf = hrp.CFrame
 	local ox, oy, oz = startCf:ToOrientation()
 	local idStr = CC.animSlideId or ""
@@ -2843,8 +2837,8 @@ function CC.runSubtleFling()
 	CC.flingInProgress = true
 	local ok, err = pcall(function()
 		local base = (r.CFrame.LookVector + Vector3.new(0, 0.35, 0)).Unit
-		local imp = math.clamp(CC.flingImpulse, 8, 220)
-		local steps = math.clamp(math.floor(CC.flingSteps), 4, 32)
+		local imp = CC.flingImpulse
+		local steps = math.floor(CC.flingSteps)
 		r.AssemblyAngularVelocity = Vector3.zero
 		local mass = math.max(r.AssemblyMass, 1e-3)
 		-- ApplyImpulse(I): deltaV = I / mass. Use I = mass * deltaV so each step adds ~imp/studs/s in that direction.
@@ -3141,7 +3135,7 @@ function K.buildCreateTab(pageCreate)
 	flDown.Parent = flingRow
 	K.roundCorners(flDown, 5)
 	flDown.MouseButton1Click:Connect(function()
-		CC.flingImpulse = math.max(10, CC.flingImpulse - 6)
+		CC.flingImpulse = CC.flingImpulse - 6
 		flRead.Text = "Impulse total: " .. tostring(math.floor(CC.flingImpulse))
 	end)
 	local flUp = Instance.new("TextButton")
@@ -3150,7 +3144,7 @@ function K.buildCreateTab(pageCreate)
 	flUp.Parent = flingRow
 	K.roundCorners(flUp, 5)
 	flUp.MouseButton1Click:Connect(function()
-		CC.flingImpulse = math.min(200, CC.flingImpulse + 6)
+		CC.flingImpulse = CC.flingImpulse + 6
 		flRead.Text = "Impulse total: " .. tostring(math.floor(CC.flingImpulse))
 	end)
 
@@ -3177,7 +3171,7 @@ function K.buildCreateTab(pageCreate)
 	stDown.Parent = stepRow
 	K.roundCorners(stDown, 5)
 	stDown.MouseButton1Click:Connect(function()
-		CC.flingSteps = math.max(4, CC.flingSteps - 2)
+		CC.flingSteps = CC.flingSteps - 2
 		stRead.Text = "Smooth steps: " .. tostring(CC.flingSteps)
 	end)
 	local stUp = Instance.new("TextButton")
@@ -3186,7 +3180,7 @@ function K.buildCreateTab(pageCreate)
 	stUp.Parent = stepRow
 	K.roundCorners(stUp, 5)
 	stUp.MouseButton1Click:Connect(function()
-		CC.flingSteps = math.min(32, CC.flingSteps + 2)
+		CC.flingSteps = CC.flingSteps + 2
 		stRead.Text = "Smooth steps: " .. tostring(CC.flingSteps)
 	end)
 
@@ -3245,7 +3239,7 @@ function K.buildCreateTab(pageCreate)
 	asDown.Parent = animSpdRow
 	K.roundCorners(asDown, 5)
 	asDown.MouseButton1Click:Connect(function()
-		CC.animSlideAnimSpeed = math.clamp(CC.animSlideAnimSpeed - 0.1, 0.05, 4)
+		CC.animSlideAnimSpeed = CC.animSlideAnimSpeed - 0.1
 		asRead.Text = string.format("Anim / slide speed: %.2f", CC.animSlideAnimSpeed)
 	end)
 	local asUp = Instance.new("TextButton")
@@ -3254,7 +3248,7 @@ function K.buildCreateTab(pageCreate)
 	asUp.Parent = animSpdRow
 	K.roundCorners(asUp, 5)
 	asUp.MouseButton1Click:Connect(function()
-		CC.animSlideAnimSpeed = math.clamp(CC.animSlideAnimSpeed + 0.1, 0.05, 4)
+		CC.animSlideAnimSpeed = CC.animSlideAnimSpeed + 0.1
 		asRead.Text = string.format("Anim / slide speed: %.2f", CC.animSlideAnimSpeed)
 	end)
 
@@ -3309,11 +3303,11 @@ function K.buildCreateTab(pageCreate)
 			lbl.Text = title .. ": " .. tostring(math.floor(CC[key] * 10) / 10) .. " studs"
 		end
 		d.MouseButton1Click:Connect(function()
-			CC[key] = math.max(0, CC[key] - step)
+			CC[key] = CC[key] - step
 			sync()
 		end)
 		u.MouseButton1Click:Connect(function()
-			CC[key] = math.min(80, CC[key] + step)
+			CC[key] = CC[key] + step
 			sync()
 		end)
 		sync()
@@ -3356,11 +3350,11 @@ function K.buildCreateTab(pageCreate)
 		durLbl.Text = "Duration: " .. string.format("%.2fs", CC.animSlideDuration)
 	end
 	durDown.MouseButton1Click:Connect(function()
-		CC.animSlideDuration = math.max(0.15, CC.animSlideDuration - 0.15)
+		CC.animSlideDuration = CC.animSlideDuration - 0.15
 		durSync()
 	end)
 	durUp.MouseButton1Click:Connect(function()
-		CC.animSlideDuration = math.min(20, CC.animSlideDuration + 0.15)
+		CC.animSlideDuration = CC.animSlideDuration + 0.15
 		durSync()
 	end)
 	durSync()
@@ -3423,27 +3417,27 @@ function K.buildCreateTab(pageCreate)
 	end
 	for _, spec in ipairs({
 		{ "-R", function()
-			CC.orbitRadius = math.max(4, CC.orbitRadius - 3)
+			CC.orbitRadius = CC.orbitRadius - 3
 			orbSync()
 		end },
 		{ "+R", function()
-			CC.orbitRadius = math.min(120, CC.orbitRadius + 3)
+			CC.orbitRadius = CC.orbitRadius + 3
 			orbSync()
 		end },
 		{ "-H", function()
-			CC.orbitHeight = math.max(-10, CC.orbitHeight - 1)
+			CC.orbitHeight = CC.orbitHeight - 1
 			orbSync()
 		end },
 		{ "+H", function()
-			CC.orbitHeight = math.min(40, CC.orbitHeight + 1)
+			CC.orbitHeight = CC.orbitHeight + 1
 			orbSync()
 		end },
 		{ "-S", function()
-			CC.orbitSpeed = math.max(0.05, CC.orbitSpeed - 0.1)
+			CC.orbitSpeed = CC.orbitSpeed - 0.1
 			orbSync()
 		end },
 		{ "+S", function()
-			CC.orbitSpeed = math.min(3, CC.orbitSpeed + 0.1)
+			CC.orbitSpeed = CC.orbitSpeed + 0.1
 			orbSync()
 		end },
 	}) do
@@ -3672,7 +3666,7 @@ function K.buildTesterMenuAntiTab(pageAnti)
 	down.Parent = stepRow
 	K.roundCorners(down, 8)
 	down.MouseButton1Click:Connect(function()
-		snapStuds = math.max(3, snapStuds - 2)
+		snapStuds = snapStuds - 2
 		K.updateLabels()
 	end)
 
@@ -3687,7 +3681,7 @@ function K.buildTesterMenuAntiTab(pageAnti)
 	up.Parent = stepRow
 	K.roundCorners(up, 8)
 	up.MouseButton1Click:Connect(function()
-		snapStuds = math.min(128, snapStuds + 2)
+		snapStuds = snapStuds + 2
 		K.updateLabels()
 	end)
 
@@ -3797,7 +3791,7 @@ function K.menuFillMoveTab(pageMove)
 	fDown.Parent = flyRow
 	K.roundCorners(fDown, 6)
 	fDown.MouseButton1Click:Connect(function()
-		flySpeed = math.max(10, flySpeed - 10)
+		flySpeed = flySpeed - 10
 		K.refreshMoveLabels()
 	end)
 	local fUp = Instance.new("TextButton")
@@ -3811,7 +3805,7 @@ function K.menuFillMoveTab(pageMove)
 	fUp.Parent = flyRow
 	K.roundCorners(fUp, 6)
 	fUp.MouseButton1Click:Connect(function()
-		flySpeed = math.min(250, flySpeed + 10)
+		flySpeed = flySpeed + 10
 		K.refreshMoveLabels()
 	end)
 
@@ -3876,7 +3870,7 @@ function K.menuFillMoveTab(pageMove)
 	spdDown.Parent = spdRow
 	K.roundCorners(spdDown, 6)
 	spdDown.MouseButton1Click:Connect(function()
-		loopWalkSpeed = math.max(8, loopWalkSpeed - 2)
+		loopWalkSpeed = loopWalkSpeed - 2
 		K.refreshMoveLabels()
 	end)
 	local spdUp = Instance.new("TextButton")
@@ -3890,7 +3884,7 @@ function K.menuFillMoveTab(pageMove)
 	spdUp.Parent = spdRow
 	K.roundCorners(spdUp, 6)
 	spdUp.MouseButton1Click:Connect(function()
-		loopWalkSpeed = math.min(120, loopWalkSpeed + 2)
+		loopWalkSpeed = loopWalkSpeed + 2
 		K.refreshMoveLabels()
 	end)
 	local spdReset = Instance.new("TextButton")
@@ -3977,7 +3971,7 @@ function K.menuFillMoveTab(pageMove)
 	tpDown.Parent = tpDistRow
 	K.roundCorners(tpDown, 6)
 	tpDown.MouseButton1Click:Connect(function()
-		tpCamDist = math.max(5, tpCamDist - 5)
+		tpCamDist = tpCamDist - 5
 		K.refreshMoveLabels()
 	end)
 
@@ -3992,7 +3986,7 @@ function K.menuFillMoveTab(pageMove)
 	tpUp.Parent = tpDistRow
 	K.roundCorners(tpUp, 6)
 	tpUp.MouseButton1Click:Connect(function()
-		tpCamDist = math.min(500, tpCamDist + 5)
+		tpCamDist = tpCamDist + 5
 		K.refreshMoveLabels()
 	end)
 
@@ -4082,7 +4076,7 @@ function K.menuFillMoveTab(pageMove)
 	rayDown.Parent = rayRow
 	K.roundCorners(rayDown, 6)
 	rayDown.MouseButton1Click:Connect(function()
-		tpRayMaxDist = math.max(10, tpRayMaxDist - 20)
+		tpRayMaxDist = tpRayMaxDist - 20
 		K.refreshMoveLabels()
 	end)
 
@@ -4097,7 +4091,7 @@ function K.menuFillMoveTab(pageMove)
 	rayUp.Parent = rayRow
 	K.roundCorners(rayUp, 6)
 	rayUp.MouseButton1Click:Connect(function()
-		tpRayMaxDist = math.min(3000, tpRayMaxDist + 20)
+		tpRayMaxDist = tpRayMaxDist + 20
 		K.refreshMoveLabels()
 	end)
 
@@ -4116,8 +4110,217 @@ function K.menuFillMoveTab(pageMove)
 	end)
 end
 
+-- Fires a ProximityPrompt locally via the engine API (same path as custom prompt UIs).
+function K.triggerProximityPrompt(prompt)
+	if not prompt or not prompt:IsA("ProximityPrompt") then
+		return
+	end
+	local function promptWorldPos(pp)
+		local parent = pp.Parent
+		if parent and parent:IsA("Attachment") then
+			return parent.WorldPosition
+		end
+		if parent and parent:IsA("BasePart") then
+			return parent.Position
+		end
+		if parent and parent:IsA("Model") then
+			local prim = parent.PrimaryPart or parent:FindFirstChildWhichIsA("BasePart")
+			if prim then
+				return prim.Position
+			end
+		end
+		local a = pp:FindFirstAncestorWhichIsA("Attachment")
+		if a then
+			return a.WorldPosition
+		end
+		local bp = pp:FindFirstAncestorWhichIsA("BasePart")
+		if bp then
+			return bp.Position
+		end
+		local m = pp:FindFirstAncestorWhichIsA("Model")
+		if m then
+			local prim = m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
+			if prim then
+				return prim.Position
+			end
+		end
+		return nil
+	end
+	local wasEnabled = prompt.Enabled
+	if not wasEnabled then
+		prompt.Enabled = true
+	end
+	task.spawn(function()
+		local ok, err = pcall(function()
+			local root = K.getRoot()
+			local oldCf = root and root.CFrame
+			local promptPos = promptWorldPos(prompt)
+			-- Run loop-TP and prompt trigger at the same time, for longer coverage.
+			local tpRunning = false
+			if root and promptPos then
+				tpRunning = true
+				task.spawn(function()
+					local tpUntil = os.clock() + 4
+					while tpRunning and os.clock() < tpUntil and root.Parent do
+						root.CFrame = CFrame.new(promptPos + Vector3.new(0, 2.2, 0), promptPos)
+						root.AssemblyLinearVelocity = Vector3.zero
+						root.AssemblyAngularVelocity = Vector3.zero
+						RunService.Heartbeat:Wait()
+					end
+					tpRunning = false
+				end)
+			end
+			-- Prefer exploit-style helper if available; Roblox only treats that as a real input for default prompts.
+			local fp = (typeof(fireproximityprompt) == "function") and fireproximityprompt or nil
+			if fp then
+				local hd = prompt.HoldDuration
+				if type(hd) ~= "number" or hd <= 0 then
+					hd = 1
+				end
+				-- Most executors interpret the second arg as hold time in seconds.
+				fp(prompt, hd)
+			else
+				-- Fallback: best-effort fake hold. This may NOT behave like a true hold on default-style prompts.
+				local hd = prompt.HoldDuration
+				if type(hd) ~= "number" or hd <= 0 then
+					hd = 1
+				end
+				prompt:InputHoldBegin()
+				task.wait(hd)
+				prompt:InputHoldEnd()
+			end
+			if tpRunning then
+				task.wait(0.6)
+				tpRunning = false
+			end
+			if root and oldCf and root.Parent then
+				root.CFrame = oldCf
+			end
+		end)
+		if not wasEnabled then
+			prompt.Enabled = false
+		end
+		if not ok then
+			warn("[Qwz kit] ProximityPrompt trigger:", err)
+		end
+	end)
+end
+
 function K.menuFillWorldTab(pageWorld)
 	-- ===== World tab (glow + lighting) =====
+	K.addSectionLabel(pageWorld, "PROXIMITY PROMPTS (LOCAL)")
+	local proxHint = Instance.new("TextLabel")
+	proxHint.BackgroundTransparency = 1
+	proxHint.Font = Enum.Font.Gotham
+	proxHint.TextSize = 10
+	proxHint.TextXAlignment = Enum.TextXAlignment.Left
+	proxHint.TextWrapped = true
+	proxHint.TextColor3 = Color3.fromRGB(120, 128, 150)
+	proxHint.Text =
+		"Lists every ProximityPrompt under the DataModel. Click a row to loop-TP onto it while holding the prompt (uses fireproximityprompt if available), then keep loop-TP briefly before stopping. Useful for tool pickup prompts."
+	proxHint.Size = UDim2.new(1, 0, 0, 44)
+	proxHint.Parent = pageWorld
+
+	local proxCount = Instance.new("TextLabel")
+	proxCount.BackgroundTransparency = 1
+	proxCount.Font = Enum.Font.GothamBold
+	proxCount.TextSize = 11
+	proxCount.TextXAlignment = Enum.TextXAlignment.Left
+	proxCount.TextColor3 = Color3.fromRGB(200, 205, 220)
+	proxCount.Text = "Prompts: (not scanned)"
+	proxCount.Size = UDim2.new(1, 0, 0, 18)
+	proxCount.Parent = pageWorld
+
+	local proxRefresh = Instance.new("TextButton")
+	proxRefresh.Size = UDim2.new(1, 0, 0, 32)
+	proxRefresh.Font = Enum.Font.GothamBold
+	proxRefresh.TextSize = 12
+	proxRefresh.Text = "Refresh proximity prompt list"
+	proxRefresh.TextColor3 = Color3.new(1, 1, 1)
+	proxRefresh.BackgroundColor3 = Color3.fromRGB(42, 48, 72)
+	proxRefresh.BorderSizePixel = 0
+	proxRefresh.Parent = pageWorld
+	K.roundCorners(proxRefresh, 6)
+
+	local proximityPromptScroll = Instance.new("ScrollingFrame")
+	proximityPromptScroll.Name = "ProximityPromptList"
+	proximityPromptScroll.BackgroundColor3 = Color3.fromRGB(18, 20, 34)
+	proximityPromptScroll.BorderSizePixel = 0
+	proximityPromptScroll.Size = UDim2.new(1, 0, 0, 160)
+	proximityPromptScroll.ScrollBarThickness = 3
+	proximityPromptScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	proximityPromptScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 130, 220)
+	proximityPromptScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+	proximityPromptScroll.Active = true
+	proximityPromptScroll.Selectable = true
+	proximityPromptScroll.ClipsDescendants = true
+	proximityPromptScroll.Parent = pageWorld
+	K.roundCorners(proximityPromptScroll, 6)
+	local proxListLayout = Instance.new("UIListLayout", proximityPromptScroll)
+	proxListLayout.Padding = UDim.new(0, 4)
+	proxListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+	local function refreshProximityPromptList()
+		local okScan, scanErr = pcall(function()
+			for _, ch in ipairs(proximityPromptScroll:GetChildren()) do
+				if ch:IsA("TextButton") then
+					ch:Destroy()
+				end
+			end
+			local list = {}
+			for _, d in ipairs(game:GetDescendants()) do
+				if d:IsA("ProximityPrompt") then
+					table.insert(list, d)
+				end
+			end
+			table.sort(list, function(a, b)
+				return a:GetFullName() < b:GetFullName()
+			end)
+			proxCount.Text = string.format("Prompts: %d (click to trigger)", #list)
+			for _, prompt in ipairs(list) do
+				local b = Instance.new("TextButton")
+				b.Size = UDim2.new(1, -8, 0, 26)
+				b.BackgroundColor3 = Color3.fromRGB(32, 36, 52)
+				b.TextColor3 = Color3.new(1, 1, 1)
+				b.Font = Enum.Font.Gotham
+				b.TextSize = 10
+				b.TextXAlignment = Enum.TextXAlignment.Left
+				b.AutoButtonColor = false
+				b.Active = true
+				b.ZIndex = 2
+				b.Parent = proximityPromptScroll
+				K.roundCorners(b, 5)
+				local objName = prompt.ObjectText
+				if objName == "" then
+					local p = prompt.Parent
+					objName = p and p.Name or "?"
+				end
+				local act = prompt.ActionText
+				if act == "" then
+					act = "Interact"
+				end
+				b.Text = string.format("%s — %s  [%s]", objName, act, prompt:GetFullName())
+				b.MouseButton1Click:Connect(function()
+					K.triggerProximityPrompt(prompt)
+				end)
+			end
+			proximityPromptScroll.CanvasSize = UDim2.new(0, 0, 0, proxListLayout.AbsoluteContentSize.Y + 8)
+		end)
+		if not okScan then
+			warn("[Qwz kit] Proximity prompt scan failed:", scanErr)
+			proxCount.Text = "Prompts: (scan failed — see Output)"
+		end
+	end
+
+	proxListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		proximityPromptScroll.CanvasSize = UDim2.new(0, 0, 0, proxListLayout.AbsoluteContentSize.Y + 8)
+	end)
+
+	proxRefresh.MouseButton1Click:Connect(function()
+		task.defer(refreshProximityPromptList)
+	end)
+	task.defer(refreshProximityPromptList)
+
 	K.addSectionLabel(pageWorld, "GLOW BLOCK")
 	textGlow = Instance.new("TextLabel")
 	textGlow.BackgroundTransparency = 1
@@ -4212,7 +4415,7 @@ function K.menuFillWorldTab(pageWorld)
 	fovDown.Parent = fovRow
 	K.roundCorners(fovDown, 6)
 	fovDown.MouseButton1Click:Connect(function()
-		camFov = math.max(20, camFov - 5)
+		camFov = camFov - 5
 		K.hookCameraFov()
 		K.applyCameraFov()
 		K.refreshWorldLabels()
@@ -4228,7 +4431,7 @@ function K.menuFillWorldTab(pageWorld)
 	fovUp.Parent = fovRow
 	K.roundCorners(fovUp, 6)
 	fovUp.MouseButton1Click:Connect(function()
-		camFov = math.min(120, camFov + 5)
+		camFov = camFov + 5
 		K.hookCameraFov()
 		K.applyCameraFov()
 		K.refreshWorldLabels()
@@ -4369,7 +4572,7 @@ function K.menuFillClientTab(pageClient, screen)
 	chDown.Parent = chamsRow
 	K.roundCorners(chDown, 6)
 	chDown.MouseButton1Click:Connect(function()
-		ESP.chamsBrightness = math.clamp(ESP.chamsBrightness - 0.1, 0.2, 1.5)
+		ESP.chamsBrightness = ESP.chamsBrightness - 0.1
 		if ESP.on then
 			K.setEspRunning()
 		end
@@ -4381,7 +4584,7 @@ function K.menuFillClientTab(pageClient, screen)
 	chUp.Parent = chamsRow
 	K.roundCorners(chUp, 6)
 	chUp.MouseButton1Click:Connect(function()
-		ESP.chamsBrightness = math.clamp(ESP.chamsBrightness + 0.1, 0.2, 1.5)
+		ESP.chamsBrightness = ESP.chamsBrightness + 0.1
 		if ESP.on then
 			K.setEspRunning()
 		end
@@ -4491,7 +4694,7 @@ function K.menuFillClientTab(pageClient, screen)
 	trDown.Parent = trThkRow
 	K.roundCorners(trDown, 6)
 	trDown.MouseButton1Click:Connect(function()
-		ESP.tracerThickness = math.max(1, ESP.tracerThickness - 1)
+		ESP.tracerThickness = ESP.tracerThickness - 1
 		K.refreshClientLabels()
 	end)
 
@@ -4506,7 +4709,7 @@ function K.menuFillClientTab(pageClient, screen)
 	trUp.Parent = trThkRow
 	K.roundCorners(trUp, 6)
 	trUp.MouseButton1Click:Connect(function()
-		ESP.tracerThickness = math.min(10, ESP.tracerThickness + 1)
+		ESP.tracerThickness = ESP.tracerThickness + 1
 		K.refreshClientLabels()
 	end)
 
@@ -4691,7 +4894,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	hbAmDown.Parent = hbAmtRow
 	K.roundCorners(hbAmDown, 6)
 	hbAmDown.MouseButton1Click:Connect(function()
-		hitboxVisualLevel = math.clamp(hitboxVisualLevel - 0.05, 0, 1)
+		hitboxVisualLevel = hitboxVisualLevel - 0.05
 		hbAmtLbl.Text = "Local transparency level: " .. string.format("%.2f", hitboxVisualLevel)
 		for p, _ in pairs(hitboxSavedLTM) do
 			if p.Parent and hitboxVisualOn then
@@ -4714,7 +4917,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	hbAmUp.Parent = hbAmtRow
 	K.roundCorners(hbAmUp, 6)
 	hbAmUp.MouseButton1Click:Connect(function()
-		hitboxVisualLevel = math.clamp(hitboxVisualLevel + 0.05, 0, 1)
+		hitboxVisualLevel = hitboxVisualLevel + 0.05
 		hbAmtLbl.Text = "Local transparency level: " .. string.format("%.2f", hitboxVisualLevel)
 		for p, _ in pairs(hitboxSavedLTM) do
 			if p.Parent and hitboxVisualOn then
@@ -4959,6 +5162,8 @@ function K.menuFillCombatTab(pageCombat)
 	-- ===== Combat QA tab =====
 	local loopTpSearchText = ""
 	local strafeSearchText = ""
+	-- Default shown in Loop TP rows (avoids stale 0.35 if an older copy mixed with new UI).
+	loopTpJitter = 0
 
 	K.addSectionLabel(pageCombat, "LOOP TP (local, behind target)")
 	local loopTpNote = Instance.new("TextLabel")
@@ -5069,7 +5274,7 @@ function K.menuFillCombatTab(pageCombat)
 		K.setLoopTpRunning()
 	end)
 
-	local function numRow(title, get, set, step, minV, maxV, onChanged)
+	local function numRow(title, get, set, step, onChanged)
 		onChanged = onChanged or K.setLoopTpRunning
 		local row = Instance.new("Frame")
 		row.BackgroundTransparency = 1
@@ -5096,7 +5301,7 @@ function K.menuFillCombatTab(pageCombat)
 		K.roundCorners(d, 4)
 		d.Active = true
 		d.Activated:Connect(function()
-			set(math.clamp(get() - step, minV, maxV))
+			set(get() - step)
 			sync()
 			onChanged()
 		end)
@@ -5107,7 +5312,7 @@ function K.menuFillCombatTab(pageCombat)
 		u.Parent = row
 		K.roundCorners(u, 4)
 		u.Activated:Connect(function()
-			set(math.clamp(get() + step, minV, maxV))
+			set(get() + step)
 			sync()
 			onChanged()
 		end)
@@ -5118,32 +5323,32 @@ function K.menuFillCombatTab(pageCombat)
 		return loopTpStudsBehind
 	end, function(v)
 		loopTpStudsBehind = v
-	end, 0.5, 0.5, 40)
+	end, 0.5)
 	numRow("Y offset", function()
 		return loopTpYOffset
 	end, function(v)
 		loopTpYOffset = v
-	end, 0.5, -8, 12)
+	end, 0.5)
 	numRow("Interval", function()
 		return loopTpInterval
 	end, function(v)
 		loopTpInterval = v
-	end, 0.005, 0.01, 0.2)
+	end, 0.005)
 	numRow("Max dist", function()
 		return loopTpMaxDist
 	end, function(v)
 		loopTpMaxDist = v
-	end, 5, 20, 500)
+	end, 5)
 	numRow("Jitter", function()
 		return loopTpJitter
 	end, function(v)
 		loopTpJitter = v
-	end, 0.05, 0, 4)
+	end, 0.05)
 	numRow("Orbit R", function()
 		return loopTpOrbitRadius
 	end, function(v)
 		loopTpOrbitRadius = v
-	end, 0.5, 0, 25)
+	end, 0.5)
 
 	local loopTpFaceBtn = K.makeToggleButton(pageCombat, "Face away from target: on", function(btn)
 		loopTpFaceAway = not loopTpFaceAway
@@ -5267,12 +5472,12 @@ function K.menuFillCombatTab(pageCombat)
 		return combatStrafeRadius
 	end, function(v)
 		combatStrafeRadius = v
-	end, 1, 4, 80, K.setCombatStrafeRunning)
+	end, 1, K.setCombatStrafeRunning)
 	numRow("Strafe spd", function()
 		return combatStrafeSpeed
 	end, function(v)
 		combatStrafeSpeed = v
-	end, 0.1, 0.2, 8, K.setCombatStrafeRunning)
+	end, 0.1, K.setCombatStrafeRunning)
 
 	combatBoostLabel = Instance.new("TextLabel")
 	combatBoostLabel.BackgroundTransparency = 1
@@ -5291,7 +5496,7 @@ function K.menuFillCombatTab(pageCombat)
 		return combatBoostMult
 	end, function(v)
 		combatBoostMult = v
-	end, 0.05, 1.05, 3, K.setCombatBoostRunning)
+	end, 0.05, K.setCombatBoostRunning)
 
 	Players.PlayerAdded:Connect(function()
 		task.defer(refreshStrafePickList)
@@ -5335,7 +5540,7 @@ function K.menuFillCombatTab(pageCombat)
 		return ESP.opSpinSpeed
 	end, function(v)
 		ESP.opSpinSpeed = v
-	end, 10, 30, 900, K.setOpCombatRunning)
+	end, 10, K.setOpCombatRunning)
 	K.refreshOpCombatUi()
 	K.menuFillCombatTabHitboxAnim(pageCombat)
 end
@@ -5354,7 +5559,7 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		return s
 	end
 
-	local function makeNumRow(title, get, set, step, minV, maxV, fmt)
+	local function makeNumRow(title, get, set, step, fmt)
 		local row = Instance.new("Frame")
 		row.BackgroundTransparency = 1
 		row.Size = UDim2.new(1, 0, 0, 30)
@@ -5386,11 +5591,11 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 			lbl.Text = title .. ": " .. string.format(fmt or "%.2f", get())
 		end
 		down.Activated:Connect(function()
-			set(math.clamp(get() - step, minV, maxV))
+			set(get() - step)
 			rec.sync()
 		end)
 		up.Activated:Connect(function()
-			set(math.clamp(get() + step, minV, maxV))
+			set(get() + step)
 			rec.sync()
 		end)
 		rec.sync()
@@ -5467,25 +5672,25 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 	end, function(v)
 		ESP.menuScale = v
 		applyMenuVisuals()
-	end, 0.05, 0.65, 1.6, "%.2f")
+	end, 0.05, "%.2f")
 	makeNumRow("Width", function()
 		return ESP.menuWidth
 	end, function(v)
 		ESP.menuWidth = math.floor(v + 0.5)
 		applyMenuVisuals()
-	end, 10, 320, 960, "%.0f")
+	end, 10, "%.0f")
 	makeNumRow("Height", function()
 		return ESP.menuHeight
 	end, function(v)
 		ESP.menuHeight = math.floor(v + 0.5)
 		applyMenuVisuals()
-	end, 10, 360, 980, "%.0f")
+	end, 10, "%.0f")
 	makeNumRow("Corner radius", function()
 		return ESP.menuCorner
 	end, function(v)
 		ESP.menuCorner = math.floor(v + 0.5)
 		applyMenuVisuals()
-	end, 1, 0, 40, "%.0f")
+	end, 1, "%.0f")
 
 	K.addSectionLabel(pageCustom, "VISUAL TUNING")
 	makeNumRow("Background alpha", function()
@@ -5493,37 +5698,37 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 	end, function(v)
 		ESP.menuBgAlpha = v
 		applyMenuVisuals()
-	end, 0.05, 0, 0.85, "%.2f")
+	end, 0.05, "%.2f")
 	makeNumRow("Top bar alpha", function()
 		return ESP.menuTopAlpha
 	end, function(v)
 		ESP.menuTopAlpha = v
 		applyMenuVisuals()
-	end, 0.05, 0, 0.9, "%.2f")
+	end, 0.05, "%.2f")
 	makeNumRow("Tab bar alpha", function()
 		return ESP.menuTabAlpha
 	end, function(v)
 		ESP.menuTabAlpha = v
 		applyMenuVisuals()
-	end, 0.05, 0, 0.95, "%.2f")
+	end, 0.05, "%.2f")
 	makeNumRow("Border thickness", function()
 		return ESP.menuBorderThickness
 	end, function(v)
 		ESP.menuBorderThickness = v
 		applyMenuVisuals()
-	end, 0.1, 0.4, 4, "%.1f")
+	end, 0.1, "%.1f")
 	makeNumRow("Border alpha", function()
 		return ESP.menuBorderAlpha
 	end, function(v)
 		ESP.menuBorderAlpha = v
 		applyMenuVisuals()
-	end, 0.05, 0, 0.95, "%.2f")
+	end, 0.05, "%.2f")
 	makeNumRow("Tab text size", function()
 		return ESP.menuTabTextSize
 	end, function(v)
 		ESP.menuTabTextSize = math.floor(v + 0.5)
 		applyMenuVisuals()
-	end, 1, 8, 17, "%.0f")
+	end, 1, "%.0f")
 
 	K.addSectionLabel(pageCustom, "TOGGLES")
 	local dragBtn = K.makeToggleButton(pageCustom, "Drag lock: off", function(btn)
