@@ -1,9 +1,3 @@
---[[
-	Tester toolkit — client-side QA helpers.
-	Place in StarterPlayer > StarterPlayerScripts.
-	− (minus) or keypad − = show/hide · header − button closes the panel.
-]]
-
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
