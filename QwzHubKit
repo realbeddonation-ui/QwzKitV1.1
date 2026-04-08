@@ -1,3 +1,9 @@
+--[[
+	Tester toolkit — client-side QA helpers.
+	Place in StarterPlayer > StarterPlayerScripts.
+	− (minus) or keypad − = show/hide · header − button closes the panel.
+]]
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -194,10 +200,26 @@ local ESP = {
 	opBhopOn = false,
 	opSpinOn = false,
 	opSpinSpeed = 260,
+	autoForceTpOn = false,
+	autoForceTpConn = nil,
+	autoForceTpLabel = nil,
+	autoForceTpDistance = 4000000,
+	autoForceTpTriggerDist = 75,
+	autoForceTpCooldown = 1.6,
+	autoForceTpReturnDelay = 0.18,
+	autoForceTpLoopMode = false,
+	autoForceTpOnGrab = false,
+	autoForceTpGrabCooldown = 0.25,
+	autoForceTpGrabLast = 0,
+	autoForceTpBurstCount = 1000,
+	autoForceTpBurstRunning = false,
+	autoForceTpBurstCancel = false,
+	autoForceTpPending = false,
+	autoForceTpLast = 0,
 
 	-- ========= Menu customization =========
 	menuScale = 1,
-	menuBgAlpha = 0,
+	menuBgAlpha = 0.12,
 	menuDragLock = false,
 	menuRainbowBorderOn = false,
 	menuRainbowConn = nil,
@@ -216,6 +238,11 @@ local ESP = {
 	mobileQuickButtonsOn = true,
 	flyTouchUp = false,
 	flyTouchDown = false,
+	-- Packed here to save main-chunk locals (Luau register limit ~200)
+	dupeScanTick = 0,
+	tpCamDist = 25,
+	tpRayMaxDist = 200,
+	labels = { move = {}, world = {}, client = {} },
 }
 
 -- ========= Macros =========
@@ -231,8 +258,8 @@ local Macro = {
 	hotkeyListen = false,
 	hotkeyListenIndex = nil,
 	sampleConn = nil,
+	moveSpeed = 44,
 }
-local MACRO_MOVE_SPEED = 44
 
 -- ========= Content-creator / cinematic tools (state in one table) =========
 local CC = {
@@ -289,15 +316,65 @@ local textGlow
 local btnGlow
 
 local COL = {
-	bg = Color3.fromRGB(14, 16, 26),
-	bgTop = Color3.fromRGB(22, 26, 42),
-	tabIdle = Color3.fromRGB(26, 30, 48),
-	tabOn = Color3.fromRGB(45, 100, 220),
-	tabGlow = Color3.fromRGB(80, 170, 255),
-	btn = Color3.fromRGB(38, 88, 200),
-	btnHot = Color3.fromRGB(55, 115, 255),
-	muted = Color3.fromRGB(140, 150, 175),
+	bg = Color3.fromRGB(150, 150, 150),
+	bgTop = Color3.fromRGB(130, 130, 130),
+	tabIdle = Color3.fromRGB(102, 102, 102),
+	tabOn = Color3.fromRGB(66, 66, 66),
+	tabGlow = Color3.fromRGB(10, 10, 10),
+	btn = Color3.fromRGB(90, 90, 90),
+	btnHot = Color3.fromRGB(74, 74, 74),
+	muted = Color3.fromRGB(228, 228, 228),
+	accent = Color3.fromRGB(64, 64, 64),
+	accentSoft = Color3.fromRGB(52, 52, 52),
+	listBg = Color3.fromRGB(20, 20, 20),
+	inputBg = Color3.fromRGB(96, 96, 96),
 }
+
+--[[
+	Easy menu colors (RGB 0–255 each). On load, these are applied once; use Customize tab to tweak live.
+	Theme tone / presets still work — they overwrite these with a neutral ramp until you RGB-edit again.
+]]
+local MENU_CFG = {
+	panel = { 150, 150, 150 },
+	top = { 130, 130, 130 },
+	tabsIdle = { 102, 102, 102 },
+	tabsOn = { 66, 66, 66 },
+	outline = { 10, 10, 10 },
+	buttons = { 90, 90, 90 },
+	buttonsHot = { 74, 74, 74 },
+	text = { 228, 228, 228 },
+	accent = { 64, 64, 64 },
+	accentSoft = { 52, 52, 52 },
+	list = { 20, 20, 20 },
+	input = { 96, 96, 96 },
+	themeTone = 150,
+	textContrast = 228,
+	accentShift = 0,
+}
+
+local function applyMenuCfgToCol()
+	local function c3(t)
+		return Color3.fromRGB(
+			math.clamp(math.floor(t[1] + 0.5), 0, 255),
+			math.clamp(math.floor(t[2] + 0.5), 0, 255),
+			math.clamp(math.floor(t[3] + 0.5), 0, 255)
+		)
+	end
+	COL.bg = c3(MENU_CFG.panel)
+	COL.bgTop = c3(MENU_CFG.top)
+	COL.tabIdle = c3(MENU_CFG.tabsIdle)
+	COL.tabOn = c3(MENU_CFG.tabsOn)
+	COL.tabGlow = c3(MENU_CFG.outline)
+	COL.btn = c3(MENU_CFG.buttons)
+	COL.btnHot = c3(MENU_CFG.buttonsHot)
+	COL.muted = c3(MENU_CFG.text)
+	COL.accent = c3(MENU_CFG.accent)
+	COL.accentSoft = c3(MENU_CFG.accentSoft)
+	COL.listBg = c3(MENU_CFG.list)
+	COL.inputBg = c3(MENU_CFG.input)
+end
+
+applyMenuCfgToCol()
 
 -- Isolate helpers from chunk scope (Luau max ~200 locals per scope)
 do
@@ -450,7 +527,7 @@ function K.afterPhysics()
 	end
 
 	-- Loop TP / orbit strafe / fling move the HRP in ways anti-TP treats as "teleports" — skip undo.
-	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress then
+	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress or ESP.autoForceTpOn or ESP.autoForceTpBurstRunning then
 		K.saveSpot(r)
 		return
 	end
@@ -484,8 +561,6 @@ function K.afterPhysics()
 
 	K.saveSpot(r)
 end
-
-local dupeScanTick = 0
 
 function K.hideExtraBodyLocal(model)
 	for _, d in model:GetDescendants() do
@@ -547,7 +622,7 @@ function K.heartbeatAgain()
 	if not antiTpOn then
 		return
 	end
-	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress then
+	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress or ESP.autoForceTpOn or ESP.autoForceTpBurstRunning then
 		return
 	end
 	if strongMode then
@@ -557,8 +632,8 @@ function K.heartbeatAgain()
 			K.shouldUndo(r, h, r.CFrame.Position, K.snapLimit())
 		end
 	end
-	dupeScanTick += 1
-	if dupeScanTick % 15 == 0 then
+	ESP.dupeScanTick += 1
+	if ESP.dupeScanTick % 15 == 0 then
 		K.scanForExtraBodies()
 	end
 end
@@ -567,7 +642,7 @@ function K.drawFrameAgain()
 	if not antiTpOn or not savedPivot then
 		return
 	end
-	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress then
+	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress or ESP.autoForceTpOn or ESP.autoForceTpBurstRunning then
 		return
 	end
 	local r = K.getRoot()
@@ -955,8 +1030,6 @@ function K.setLoopWalkRunning()
 end
 
 -- ========= Camera-relative teleport =========
-local tpCamDist = 25
-
 function K.tpRelativeCamera(forwardMul, rightMul, yOffset)
 	local char = me.Character
 	if not char then
@@ -983,15 +1056,13 @@ function K.tpRelativeCamera(forwardMul, rightMul, yOffset)
 		flatRight = flatRight.Unit
 	end
 
-	local dist = tpCamDist
+	local dist = ESP.tpCamDist
 	local delta = flatLook * (forwardMul * dist) + flatRight * (rightMul * dist)
 	local newPos = root.Position + delta + Vector3.new(0, yOffset or 2, 0)
 	root.CFrame = CFrame.new(newPos, newPos + flatLook)
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
 end
-
-local tpRayMaxDist = 200
 
 function K.tpToCameraRay(yOffset)
 	local char = me.Character
@@ -1017,7 +1088,7 @@ function K.tpToCameraRay(yOffset)
 	params.IgnoreWater = true
 
 	local origin = cam.CFrame.Position
-	local dir = cam.CFrame.LookVector * tpRayMaxDist
+	local dir = cam.CFrame.LookVector * ESP.tpRayMaxDist
 	local hit = Workspace:Raycast(origin, dir, params)
 	local pos = hit and hit.Position or (origin + dir)
 	local newPos = pos + Vector3.new(0, yOffset or 3, 0)
@@ -1938,6 +2009,176 @@ function K.setCombatResistRunning()
 	end
 end
 
+function K.stopAutoForceTp()
+	if ESP.autoForceTpConn then
+		ESP.autoForceTpConn:Disconnect()
+		ESP.autoForceTpConn = nil
+	end
+	ESP.autoForceTpBurstCancel = true
+	ESP.autoForceTpPending = false
+end
+
+function K.isLikelyGrabbedByOtherPlayer()
+	local char = me.Character
+	if not char then
+		return false
+	end
+	for _, d in char:GetDescendants() do
+		if d:IsA("WeldConstraint") then
+			local p0 = d.Part0
+			local p1 = d.Part1
+			if p0 and p1 then
+				local p0Mine = p0:IsDescendantOf(char)
+				local p1Mine = p1:IsDescendantOf(char)
+				if p0Mine ~= p1Mine then
+					return true
+				end
+			end
+		elseif d:IsA("AlignPosition") or d:IsA("AlignOrientation") then
+			local a0 = d.Attachment0
+			local a1 = d.Attachment1
+			local p0 = a0 and a0.Parent
+			local p1 = a1 and a1.Parent
+			if p0 and p1 then
+				local p0Mine = p0:IsDescendantOf(char)
+				local p1Mine = p1:IsDescendantOf(char)
+				if p0Mine ~= p1Mine then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+function K.startAutoForceTp()
+	K.stopAutoForceTp()
+	local lastPos = nil
+	local nextGrabScan = 0
+	ESP.autoForceTpConn = RunService.Heartbeat:Connect(function()
+		if not ESP.autoForceTpOn then
+			return
+		end
+		local root = K.getRoot()
+		local hum = K.getHumanoid()
+		if not root or not hum then
+			lastPos = nil
+			return
+		end
+		local now = os.clock()
+		local grabbedTriggered = false
+		if ESP.autoForceTpOnGrab and now >= nextGrabScan then
+			nextGrabScan = now + 0.08
+			if K.isLikelyGrabbedByOtherPlayer() and (now - ESP.autoForceTpGrabLast) >= math.max(0.05, ESP.autoForceTpGrabCooldown) then
+				ESP.autoForceTpGrabLast = now
+				grabbedTriggered = true
+			end
+		end
+		local moved = 0
+		if lastPos then
+			moved = (root.Position - lastPos).Magnitude
+		end
+		lastPos = root.Position
+		local moveIntent = hum.MoveDirection.Magnitude > 0.18
+		local canFire = (now - ESP.autoForceTpLast) >= math.max(0.005, ESP.autoForceTpCooldown)
+		if ESP.autoForceTpPending or not canFire then
+			return
+		end
+		if (not ESP.autoForceTpLoopMode) and (not grabbedTriggered) and moved < math.max(8, ESP.autoForceTpTriggerDist) and root.AssemblyLinearVelocity.Magnitude < 70 then
+			return
+		end
+		if (not ESP.autoForceTpLoopMode) and (not grabbedTriggered) and moveIntent then
+			return
+		end
+		ESP.autoForceTpPending = true
+		ESP.autoForceTpLast = now
+		local saved = root.CFrame
+		local look = saved.LookVector
+		local far = math.clamp(ESP.autoForceTpDistance, 1000000, 1000000000)
+		local voidPos = saved.Position + Vector3.new(0, -far, 0)
+		root.CFrame = CFrame.new(voidPos, voidPos + look)
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+		task.delay(math.max(0.005, ESP.autoForceTpReturnDelay), function()
+			local r2 = K.getRoot()
+			if r2 then
+				r2.CFrame = saved
+				r2.AssemblyLinearVelocity = Vector3.zero
+				r2.AssemblyAngularVelocity = Vector3.zero
+			end
+			ESP.autoForceTpPending = false
+		end)
+	end)
+end
+
+function K.setAutoForceTpRunning()
+	if ESP.autoForceTpOn then
+		K.startAutoForceTp()
+	else
+		K.stopAutoForceTp()
+	end
+	if ESP.autoForceTpLabel then
+		ESP.autoForceTpLabel.Text = string.format(
+			"AutoForce TP: %s | mode %s | on-grab %s | trigger %.0f | void %.0f | cd %.3fs | return %.3fs",
+			ESP.autoForceTpOn and "ON" or "OFF",
+			ESP.autoForceTpLoopMode and "loop" or "reactive",
+			ESP.autoForceTpOnGrab and "on" or "off",
+			ESP.autoForceTpTriggerDist,
+			ESP.autoForceTpDistance,
+			ESP.autoForceTpCooldown,
+			ESP.autoForceTpReturnDelay
+		)
+	end
+end
+
+function K.runAutoForceTpBurst()
+	if ESP.autoForceTpBurstRunning then
+		return
+	end
+	local root = K.getRoot()
+	if not root then
+		return
+	end
+	ESP.autoForceTpBurstRunning = true
+	ESP.autoForceTpBurstCancel = false
+	ESP.autoForceTpPending = true
+	task.spawn(function()
+		local count = math.clamp(math.floor(ESP.autoForceTpBurstCount), 1, 5000)
+		local far = math.clamp(ESP.autoForceTpDistance, 1000000, 1000000000)
+		local hold = math.max(0, ESP.autoForceTpReturnDelay)
+		for i = 1, count do
+			if ESP.autoForceTpBurstCancel then
+				break
+			end
+			local r = K.getRoot()
+			if not r then
+				break
+			end
+			local saved = r.CFrame
+			local look = saved.LookVector
+			local voidPos = saved.Position + Vector3.new(0, -far, 0)
+			r.CFrame = CFrame.new(voidPos, voidPos + look)
+			r.AssemblyLinearVelocity = Vector3.zero
+			r.AssemblyAngularVelocity = Vector3.zero
+			-- Keep at least one frame in void so games register a real TP.
+			if hold > 0.005 then
+				task.wait(hold)
+			else
+				RunService.Heartbeat:Wait()
+			end
+			r.CFrame = saved
+			r.AssemblyLinearVelocity = Vector3.zero
+			r.AssemblyAngularVelocity = Vector3.zero
+			if hold <= 0.005 and i % 30 == 0 then
+				RunService.Heartbeat:Wait()
+			end
+		end
+		ESP.autoForceTpPending = false
+		ESP.autoForceTpBurstRunning = false
+		ESP.autoForceTpBurstCancel = false
+	end)
+end
+
 -- ========= OP combat (local, visual) =========
 function K.getOpCombatTargetPlayer()
 	-- Prefer loop-orbit selected targets if set.
@@ -1961,7 +2202,7 @@ function K.ensureOpAimLineFrame()
 	local fr = Instance.new("Frame")
 	fr.Name = "TesterOPAimLine"
 	fr.Visible = false
-	fr.BackgroundColor3 = Color3.fromRGB(120, 200, 255)
+	fr.BackgroundColor3 = COL.accent
 	fr.BorderSizePixel = 0
 	fr.ZIndex = 1
 	fr.Parent = g
@@ -2028,7 +2269,7 @@ function K.opCombatHeartbeat()
 				if plr.Team and plr.Team.TeamColor then
 					fr.BackgroundColor3 = plr.Team.TeamColor.Color
 				else
-					fr.BackgroundColor3 = Color3.fromRGB(120, 200, 255)
+					fr.BackgroundColor3 = COL.accent
 				end
 			else
 				fr.Visible = false
@@ -2215,16 +2456,24 @@ function K.roundCorners(frame, pixels)
 	return c
 end
 
+function K.getReadableTextColor(bg)
+	local lum = 0.299 * bg.R + 0.587 * bg.G + 0.114 * bg.B
+	if lum > 0.55 then
+		return Color3.fromRGB(18, 18, 18)
+	end
+	return Color3.fromRGB(245, 245, 245)
+end
+
 -- Shared menu UI bits (keeps `buildMenu` and tab builders shorter for analyzer limits)
 function K.addSectionLabel(scroll, text)
 	local l = Instance.new("TextLabel")
 	l.BackgroundTransparency = 1
 	l.Font = Enum.Font.GothamBold
-	l.TextSize = 11
+	l.TextSize = 12
 	l.TextXAlignment = Enum.TextXAlignment.Left
 	l.TextColor3 = COL.tabGlow
 	l.Text = text
-	l.Size = UDim2.new(1, 0, 0, 16)
+	l.Size = UDim2.new(1, 0, 0, 18)
 	l.Parent = scroll
 	return l
 end
@@ -2234,8 +2483,8 @@ function K.makeToggleButton(scroll, text, callback)
 	b.Size = UDim2.new(1, 0, 0, 36)
 	b.Font = Enum.Font.GothamBold
 	b.TextSize = 13
-	b.TextColor3 = Color3.new(1, 1, 1)
-	b.BackgroundColor3 = Color3.fromRGB(36, 40, 58)
+	b.TextColor3 = K.getReadableTextColor(COL.btn)
+	b.BackgroundColor3 = COL.btn
 	b.BorderSizePixel = 0
 	b.Text = text
 	b.AutoButtonColor = true
@@ -2244,6 +2493,14 @@ function K.makeToggleButton(scroll, text, callback)
 	b.ZIndex = 2
 	b.Parent = scroll
 	K.roundCorners(b, 8)
+	local grad = Instance.new("UIGradient")
+	grad.Rotation = 90
+	grad.Color = ColorSequence.new(COL.btn, COL.btnHot)
+	grad.Parent = b
+	local s = Instance.new("UIStroke", b)
+	s.Thickness = 1
+	s.Transparency = 0.6
+	s.Color = COL.tabGlow
 	-- Pass `b` so callbacks never touch a nil local (e.g. `local x = makeToggleButton(..., function() x.Text=...)`).
 	b.Activated:Connect(function()
 		callback(b)
@@ -2278,7 +2535,7 @@ function K.buildMobileQuickButtons(screen)
 	local function addMiniButton(label, cb)
 		local b = Instance.new("TextButton")
 		b.Size = UDim2.fromOffset(34, 30)
-		b.BackgroundColor3 = Color3.fromRGB(35, 42, 64)
+		b.BackgroundColor3 = COL.btn
 		b.BorderSizePixel = 0
 		b.Font = Enum.Font.GothamBold
 		b.TextSize = 11
@@ -2361,11 +2618,11 @@ function K.populateAnimScanList()
 		local row = Instance.new("TextButton")
 		row.AutoButtonColor = false
 		row.Size = UDim2.new(1, -6, 0, 30)
-		row.BackgroundColor3 = Color3.fromRGB(32, 36, 52)
+		row.BackgroundColor3 = COL.listBg
 		row.TextXAlignment = Enum.TextXAlignment.Left
 		row.Font = Enum.Font.Gotham
 		row.TextSize = UserInputService.TouchEnabled and 13 or 11
-		row.TextColor3 = Color3.new(1, 1, 1)
+		row.TextColor3 = K.getReadableTextColor(row.BackgroundColor3)
 		row.BorderSizePixel = 0
 		local shortId = anim.AnimationId
 		if #shortId > 46 then
@@ -2415,11 +2672,11 @@ function K.refreshEspTargetList()
 		row.Selectable = true
 		row.ZIndex = 3
 		row.Size = UDim2.new(1, -6, 0, 28)
-		row.BackgroundColor3 = Color3.fromRGB(32, 36, 52)
+		row.BackgroundColor3 = COL.listBg
 		row.TextXAlignment = Enum.TextXAlignment.Left
 		row.Font = Enum.Font.Gotham
 		row.TextSize = 11
-		row.TextColor3 = Color3.new(1, 1, 1)
+		row.TextColor3 = K.getReadableTextColor(row.BackgroundColor3)
 		row.BorderSizePixel = 0
 		row.Text = "  " .. pick.Name .. "  (" .. (pick.DisplayName or pick.Name) .. ")"
 		row.Parent = ESP.targetScroll
@@ -2469,7 +2726,7 @@ function K.ensureBoxEsp(player, root)
 		ad.Size = size
 		ad.CFrame = CFrame.new()
 		ad.Color3 = ESP.teamColor and player.Team and player.Team.TeamColor and player.Team.TeamColor.Color
-			or Color3.fromRGB(120, 200, 255)
+			or COL.accent
 		ad.Transparency = math.clamp(1 - ESP.chamsBrightness * 0.5, 0, 1)
 		ad.Parent = root
 		table.insert(list, ad)
@@ -2479,7 +2736,7 @@ function K.ensureBoxEsp(player, root)
 				ad.Adornee = root
 				ad.Size = size
 				ad.Color3 = ESP.teamColor and player.Team and player.Team.TeamColor and player.Team.TeamColor.Color
-					or Color3.fromRGB(120, 200, 255)
+					or COL.accent
 				ad.Transparency = math.clamp(1 - ESP.chamsBrightness * 0.5, 0, 1)
 			end
 		end
@@ -2556,7 +2813,7 @@ function K.refreshEspPlayer(player)
 		hl.FillColor = player.Team.TeamColor.Color
 		hl.OutlineColor = player.Team.TeamColor.Color
 	else
-		hl.FillColor = Color3.fromRGB(120, 200, 255)
+		hl.FillColor = COL.accent
 		hl.OutlineColor = Color3.fromRGB(180, 235, 255)
 	end
 
@@ -2570,7 +2827,7 @@ function K.refreshEspPlayer(player)
 			fr = Instance.new("Frame")
 			fr.Name = "Tracer_" .. player.Name
 			fr.AnchorPoint = Vector2.new(0.5, 0.5)
-			fr.BackgroundColor3 = ESP.teamColor and player.Team and player.Team.TeamColor and player.Team.TeamColor.Color or Color3.fromRGB(120, 200, 255)
+			fr.BackgroundColor3 = ESP.teamColor and player.Team and player.Team.TeamColor and player.Team.TeamColor.Color or COL.accent
 			fr.BorderSizePixel = 0
 			fr.ZIndex = 1
 			fr.Parent = g
@@ -2665,7 +2922,7 @@ function K.updateLabels()
 		btnMain.Text = antiTpOn and "Turn off anti-teleport" or "Turn on anti-teleport"
 		local grad = btnMain:FindFirstChildOfClass("UIGradient")
 		if antiTpOn then
-			btnMain.BackgroundColor3 = Color3.fromRGB(140, 50, 65)
+			btnMain.BackgroundColor3 = COL.accent
 			if grad then
 				grad.Color = ColorSequence.new(Color3.fromRGB(220, 85, 100), Color3.fromRGB(120, 40, 55))
 			end
@@ -2696,11 +2953,9 @@ function K.updateLabels()
 end
 
 
--- Forward declarations for toggles that need UI refs
-local Labels = { move = {}, world = {}, client = {} }
 function K.refreshMoveLabels()
-	if Labels.move.fly then
-		Labels.move.fly.Text = flyOn and "Flying: on" or "Flying: off"
+	if ESP.labels.move.fly then
+		ESP.labels.move.fly.Text = flyOn and "Flying: on" or "Flying: off"
 	end
 	if flyKeybindBtn then
 		local extra = flyKeybindListen and "  (press a key… Esc=cancel)" or ""
@@ -2709,83 +2964,83 @@ function K.refreshMoveLabels()
 	if flyAntiStuckBtn then
 		flyAntiStuckBtn.Text = flyAntiStuckOn and "Fly anti-stuck: on" or "Fly anti-stuck: off"
 	end
-	if Labels.move.flySpd then
-		Labels.move.flySpd.Text = "Fly speed: " .. tostring(math.floor(flySpeed))
+	if ESP.labels.move.flySpd then
+		ESP.labels.move.flySpd.Text = "Fly speed: " .. tostring(math.floor(flySpeed))
 	end
-	if Labels.move.noclip then
-		Labels.move.noclip.Text = noclipOn and "Noclip: on" or "Noclip: off"
+	if ESP.labels.move.noclip then
+		ESP.labels.move.noclip.Text = noclipOn and "Noclip: on" or "Noclip: off"
 	end
-	if Labels.move.speed then
-		Labels.move.speed.Text = "Loop-walk: " .. (loopWalkOn and "on" or "off") .. "  speed " .. tostring(math.floor(loopWalkSpeed))
+	if ESP.labels.move.speed then
+		ESP.labels.move.speed.Text = "Loop-walk: " .. (loopWalkOn and "on" or "off") .. "  speed " .. tostring(math.floor(loopWalkSpeed))
 	end
-	if Labels.move.jump then
-		Labels.move.jump.Text = "Uses MoveDirection; hold movement keys for smooth stepping"
+	if ESP.labels.move.jump then
+		ESP.labels.move.jump.Text = "Uses MoveDirection; hold movement keys for smooth stepping"
 	end
-	if Labels.move.tpDist then
-		Labels.move.tpDist.Text = "TP distance: " .. tostring(tpCamDist) .. " studs"
+	if ESP.labels.move.tpDist then
+		ESP.labels.move.tpDist.Text = "TP distance: " .. tostring(ESP.tpCamDist) .. " studs"
 	end
-	if Labels.move.tpRayDist then
-		Labels.move.tpRayDist.Text = "Ray TP max: " .. tostring(tpRayMaxDist) .. " studs"
+	if ESP.labels.move.tpRayDist then
+		ESP.labels.move.tpRayDist.Text = "Ray TP max: " .. tostring(ESP.tpRayMaxDist) .. " studs"
 	end
 end
 
 function K.refreshWorldLabels()
-	if Labels.world.fb then
-		Labels.world.fb.Text = fullbrightOn and "Fullbright: on" or "Fullbright: off"
+	if ESP.labels.world.fb then
+		ESP.labels.world.fb.Text = fullbrightOn and "Fullbright: on" or "Fullbright: off"
 	end
-	if Labels.world.fog then
-		Labels.world.fog.Text = fogClearOn and "Clear fog: on" or "Clear fog: off"
+	if ESP.labels.world.fog then
+		ESP.labels.world.fog.Text = fogClearOn and "Clear fog: on" or "Clear fog: off"
 	end
-	if Labels.world.fov then
-		Labels.world.fov.Text = "Camera FOV: " .. tostring(math.floor(camFov))
+	if ESP.labels.world.fov then
+		ESP.labels.world.fov.Text = "Camera FOV: " .. tostring(math.floor(camFov))
 	end
-	if Labels.world.sh then
-		Labels.world.sh.Text = shadowsOff and "Global shadows: off (local)" or "Global shadows: on"
+	if ESP.labels.world.sh then
+		ESP.labels.world.sh.Text = shadowsOff and "Global shadows: off (local)" or "Global shadows: on"
 	end
-	if Labels.world.clk then
-		Labels.world.clk.Text = string.format(
+	if ESP.labels.world.clk then
+		ESP.labels.world.clk.Text = string.format(
 			"Clock override: %s | time %.2f",
 			worldClockOverride and "on" or "off",
 			worldClockTime
 		)
 	end
-	if Labels.world.atm then
-		Labels.world.atm.Text = atmosphereClearOn and "Atmosphere: lighter (local)" or "Atmosphere: default"
+	if ESP.labels.world.atm then
+		ESP.labels.world.atm.Text = atmosphereClearOn and "Atmosphere: lighter (local)" or "Atmosphere: default"
 	end
 end
 
 K.refreshClientLabels = function()
-	if Labels.client.esp then
-		Labels.client.esp.Text = ESP.on and "Player ESP: on" or "Player ESP: off"
+	if ESP.labels.client.esp then
+		ESP.labels.client.esp.Text = ESP.on and "Player ESP: on" or "Player ESP: off"
 	end
-	if Labels.client.tr then
-		Labels.client.tr.Text = ESP.tracers and "Tracers: on" or "Tracers: off"
+	if ESP.labels.client.tr then
+		ESP.labels.client.tr.Text = ESP.tracers and "Tracers: on" or "Tracers: off"
 	end
-	if Labels.client.hp then
-		Labels.client.hp.Text = ESP.hp and "ESP HP: on" or "ESP HP: off"
+	if ESP.labels.client.hp then
+		ESP.labels.client.hp.Text = ESP.hp and "ESP HP: on" or "ESP HP: off"
 	end
-	if Labels.client.trOrigin then
+	if ESP.labels.client.trOrigin then
 		local mode = ESP.tracerOriginMode == "center" and "center"
 			or (ESP.tracerOriginMode == "mouse" and "mouse" or "bottom")
-		Labels.client.trOrigin.Text = "Tracer origin: " .. mode
+		ESP.labels.client.trOrigin.Text = "Tracer origin: " .. mode
 	end
-	if Labels.client.trThk then
-		Labels.client.trThk.Text = "Tracer thickness: " .. tostring(ESP.tracerThickness)
+	if ESP.labels.client.trThk then
+		ESP.labels.client.trThk.Text = "Tracer thickness: " .. tostring(ESP.tracerThickness)
 	end
-	if Labels.client.nm then
-		Labels.client.nm.Text = ESP.names and "ESP names: on" or "ESP names: off"
+	if ESP.labels.client.nm then
+		ESP.labels.client.nm.Text = ESP.names and "ESP names: on" or "ESP names: off"
 	end
-	if Labels.client.ds then
-		Labels.client.ds.Text = ESP.dist and "ESP distance: on" or "ESP distance: off"
+	if ESP.labels.client.ds then
+		ESP.labels.client.ds.Text = ESP.dist and "ESP distance: on" or "ESP distance: off"
 	end
-	if Labels.client.tm then
-		Labels.client.tm.Text = ESP.teamColor and "Team color: on" or "Team color: off"
+	if ESP.labels.client.tm then
+		ESP.labels.client.tm.Text = ESP.teamColor and "Team color: on" or "Team color: off"
 	end
-	if Labels.client.box then
-		Labels.client.box.Text = ESP.boxEsp and "3D box on HRP: on" or "3D box on HRP: off"
+	if ESP.labels.client.box then
+		ESP.labels.client.box.Text = ESP.boxEsp and "3D box on HRP: on" or "3D box on HRP: off"
 	end
-	if Labels.client.chams then
-		Labels.client.chams.Text = "Box visibility: " .. string.format("%.2f", ESP.chamsBrightness)
+	if ESP.labels.client.chams then
+		ESP.labels.client.chams.Text = "Box visibility: " .. string.format("%.2f", ESP.chamsBrightness)
 	end
 	if ESP.targetLabel then
 		local t = K.getEspTargetPlayer()
@@ -2943,7 +3198,7 @@ function K.playMacro(idx)
 					return
 				end
 				local v = r.AssemblyLinearVelocity
-				r.AssemblyLinearVelocity = Vector3.new(dir.X * MACRO_MOVE_SPEED, v.Y, dir.Z * MACRO_MOVE_SPEED)
+				r.AssemblyLinearVelocity = Vector3.new(dir.X * Macro.moveSpeed, v.Y, dir.Z * Macro.moveSpeed)
 				pcall(function()
 					h:Move(dir, false)
 				end)
@@ -3049,7 +3304,7 @@ K.rebuildMacroList = function()
 	end
 	for idx, mac in ipairs(Macro.list) do
 		local row = Instance.new("Frame")
-		row.BackgroundColor3 = Color3.fromRGB(26, 30, 46)
+		row.BackgroundColor3 = COL.listBg
 		row.BorderSizePixel = 0
 		row.Size = UDim2.new(1, 0, 0, 72)
 		row.Parent = Macro.listFrame
@@ -3073,12 +3328,12 @@ K.rebuildMacroList = function()
 		hkBtn.Font = Enum.Font.Gotham
 		hkBtn.TextSize = 11
 		hkBtn.TextColor3 = Color3.new(1, 1, 1)
-		hkBtn.BackgroundColor3 = Color3.fromRGB(50, 55, 80)
+		hkBtn.BackgroundColor3 = COL.btn
 		hkBtn.BorderSizePixel = 0
 		hkBtn.Text = mac.hotkey and ("Key: " .. mac.hotkey.Name) or "Assign key"
 		if Macro.hotkeyListen and Macro.hotkeyListenIndex == idx then
 			hkBtn.Text = "Press a key…"
-			hkBtn.BackgroundColor3 = Color3.fromRGB(80, 60, 30)
+			hkBtn.BackgroundColor3 = COL.tabOn
 		end
 		hkBtn.Parent = row
 		K.roundCorners(hkBtn, 6)
@@ -3111,7 +3366,7 @@ K.rebuildMacroList = function()
 		playBtn.Font = Enum.Font.GothamBold
 		playBtn.TextSize = 11
 		playBtn.TextColor3 = Color3.new(1, 1, 1)
-		playBtn.BackgroundColor3 = Color3.fromRGB(38, 88, 200)
+		playBtn.BackgroundColor3 = COL.accentSoft
 		playBtn.BorderSizePixel = 0
 		playBtn.Text = "▶ Play"
 		playBtn.Parent = row
@@ -3126,7 +3381,7 @@ K.rebuildMacroList = function()
 		delBtn.Font = Enum.Font.GothamBold
 		delBtn.TextSize = 11
 		delBtn.TextColor3 = Color3.new(1, 1, 1)
-		delBtn.BackgroundColor3 = Color3.fromRGB(110, 35, 35)
+		delBtn.BackgroundColor3 = COL.accent
 		delBtn.BorderSizePixel = 0
 		delBtn.Text = "Delete"
 		delBtn.Parent = row
@@ -3599,11 +3854,11 @@ function K.buildCreateTab(pageCreate)
 
 	local function makePickScroll()
 		local sf = Instance.new("ScrollingFrame")
-		sf.BackgroundColor3 = Color3.fromRGB(18, 20, 34)
+		sf.BackgroundColor3 = COL.listBg
 		sf.BorderSizePixel = 0
 		sf.Size = UDim2.new(1, 0, 0, 88)
 		sf.ScrollBarThickness = 3
-		sf.ScrollBarImageColor3 = Color3.fromRGB(90, 130, 220)
+		sf.ScrollBarImageColor3 = COL.accentSoft
 		sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
 		sf.CanvasSize = UDim2.new()
 		K.roundCorners(sf, 6)
@@ -3625,7 +3880,7 @@ function K.buildCreateTab(pageCreate)
 			end
 			local meBtn = Instance.new("TextButton")
 			meBtn.Size = UDim2.new(1, -4, 0, 26)
-			meBtn.BackgroundColor3 = Color3.fromRGB(40, 90, 70)
+			meBtn.BackgroundColor3 = COL.accentSoft
 			meBtn.TextColor3 = Color3.new(1, 1, 1)
 			meBtn.Font = Enum.Font.GothamBold
 			meBtn.TextSize = 11
@@ -3644,8 +3899,8 @@ function K.buildCreateTab(pageCreate)
 				if plr ~= me then
 					local b = Instance.new("TextButton")
 					b.Size = UDim2.new(1, -4, 0, 26)
-					b.BackgroundColor3 = Color3.fromRGB(32, 36, 52)
-					b.TextColor3 = Color3.new(1, 1, 1)
+					b.BackgroundColor3 = COL.listBg
+					b.TextColor3 = K.getReadableTextColor(b.BackgroundColor3)
 					b.Font = Enum.Font.Gotham
 					b.TextSize = 11
 					b.Text = plr.Name
@@ -3781,7 +4036,7 @@ function K.buildCreateTab(pageCreate)
 	sectionLabel(pageCreate, "ANIM SLIDE (smooth move + anim)")
 	local idBox = Instance.new("TextBox")
 	idBox.Size = UDim2.new(1, 0, 0, 30)
-	idBox.BackgroundColor3 = Color3.fromRGB(30, 34, 50)
+	idBox.BackgroundColor3 = COL.inputBg
 	idBox.TextColor3 = Color3.new(1, 1, 1)
 	idBox.Font = Enum.Font.Gotham
 	idBox.TextSize = 12
@@ -4104,7 +4359,7 @@ function K.buildMacroTab(pageMacro)
 
 	local macroNameBox = Instance.new("TextBox")
 	macroNameBox.Size = UDim2.new(1, 0, 0, 32)
-	macroNameBox.BackgroundColor3 = Color3.fromRGB(30, 34, 50)
+	macroNameBox.BackgroundColor3 = COL.inputBg
 	macroNameBox.TextColor3 = Color3.new(1, 1, 1)
 	macroNameBox.Font = Enum.Font.Gotham
 	macroNameBox.TextSize = 13
@@ -4128,7 +4383,7 @@ function K.buildMacroTab(pageMacro)
 	recBtn.Font = Enum.Font.GothamBold
 	recBtn.TextSize = 13
 	recBtn.TextColor3 = Color3.new(1, 1, 1)
-	recBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
+	recBtn.BackgroundColor3 = COL.btn
 	recBtn.BorderSizePixel = 0
 	recBtn.Text = "⏺ Start Recording"
 	recBtn.Parent = recRow
@@ -4139,7 +4394,7 @@ function K.buildMacroTab(pageMacro)
 	stopBtn.Font = Enum.Font.GothamBold
 	stopBtn.TextSize = 13
 	stopBtn.TextColor3 = Color3.new(1, 1, 1)
-	stopBtn.BackgroundColor3 = Color3.fromRGB(50, 55, 80)
+	stopBtn.BackgroundColor3 = COL.btn
 	stopBtn.BorderSizePixel = 0
 	stopBtn.Text = "⏹ Stop & Save"
 	stopBtn.Parent = recRow
@@ -4148,9 +4403,9 @@ function K.buildMacroTab(pageMacro)
 	recBtn.MouseButton1Click:Connect(function()
 		if Macro.recording then return end
 		K.startRecording()
-		recBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+		recBtn.BackgroundColor3 = COL.accent
 		recBtn.Text = "⏺ Recording…"
-		stopBtn.BackgroundColor3 = Color3.fromRGB(38, 88, 200)
+		stopBtn.BackgroundColor3 = COL.accentSoft
 		Macro.statusLabel.Text = "Recording… WASD / movement, Space, clicks (world), tools"
 	end)
 
@@ -4160,8 +4415,8 @@ function K.buildMacroTab(pageMacro)
 		local savedOk = K.stopRecording(name)
 		macroNameBox.Text = ""
 		recBtn.Text = "⏺ Start Recording"
-		recBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
-		stopBtn.BackgroundColor3 = Color3.fromRGB(50, 55, 80)
+		recBtn.BackgroundColor3 = COL.btn
+		stopBtn.BackgroundColor3 = COL.btn
 		if savedOk then
 			Macro.statusLabel.Text = "Saved! " .. tostring(#Macro.list) .. " macro(s) total."
 		else
@@ -4255,7 +4510,7 @@ function K.buildTesterMenuAntiTab(pageAnti)
 	down.Font = Enum.Font.GothamBold
 	down.TextSize = 18
 	down.TextColor3 = Color3.new(1, 1, 1)
-	down.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	down.BackgroundColor3 = COL.btn
 	down.BorderSizePixel = 0
 	down.Parent = stepRow
 	K.roundCorners(down, 8)
@@ -4270,7 +4525,7 @@ function K.buildTesterMenuAntiTab(pageAnti)
 	up.Font = Enum.Font.GothamBold
 	up.TextSize = 18
 	up.TextColor3 = Color3.new(1, 1, 1)
-	up.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	up.BackgroundColor3 = COL.btn
 	up.BorderSizePixel = 0
 	up.Parent = stepRow
 	K.roundCorners(up, 8)
@@ -4295,7 +4550,7 @@ function K.buildTesterMenuAntiTab(pageAnti)
 	btnStrong.Font = Enum.Font.GothamBold
 	btnStrong.TextSize = 13
 	btnStrong.TextColor3 = Color3.new(1, 1, 1)
-	btnStrong.BackgroundColor3 = Color3.fromRGB(36, 40, 58)
+	btnStrong.BackgroundColor3 = COL.btn
 	btnStrong.BorderSizePixel = 0
 	btnStrong.Parent = pageAnti
 	K.roundCorners(btnStrong, 8)
@@ -4313,7 +4568,7 @@ function K.makeMenuScrollPage(name, contentHolder)
 	scroll.Size = UDim2.new(1, 0, 1, 0)
 	scroll.Position = UDim2.fromOffset(0, 0)
 	scroll.ScrollBarThickness = 4
-	scroll.ScrollBarImageColor3 = Color3.fromRGB(90, 130, 220)
+	scroll.ScrollBarImageColor3 = COL.accentSoft
 	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	scroll.CanvasSize = UDim2.new()
 	scroll.Active = true
@@ -4349,7 +4604,7 @@ function K.menuFillMoveTab(pageMove)
 		"Camera-relative: W/S along look, A/D strafe, Space/Ctrl world up/down. Hotkey toggles fly (see below)."
 	flyLbl.Size = UDim2.new(1, 0, 0, 44)
 	flyLbl.Parent = pageMove
-	Labels.move.fly = K.makeToggleButton(pageMove, "Flying: off", function()
+	ESP.labels.move.fly = K.makeToggleButton(pageMove, "Flying: off", function()
 		flyOn = not flyOn
 		K.setFlyRunning()
 		K.refreshMoveLabels()
@@ -4362,14 +4617,14 @@ function K.menuFillMoveTab(pageMove)
 		flyAntiStuckOn = not flyAntiStuckOn
 		K.refreshMoveLabels()
 	end)
-	Labels.move.flySpd = Instance.new("TextLabel")
-	Labels.move.flySpd.BackgroundTransparency = 1
-	Labels.move.flySpd.Font = Enum.Font.Gotham
-	Labels.move.flySpd.TextSize = 12
-	Labels.move.flySpd.TextXAlignment = Enum.TextXAlignment.Left
-	Labels.move.flySpd.TextColor3 = Color3.fromRGB(200, 205, 220)
-	Labels.move.flySpd.Size = UDim2.new(1, 0, 0, 20)
-	Labels.move.flySpd.Parent = pageMove
+	ESP.labels.move.flySpd = Instance.new("TextLabel")
+	ESP.labels.move.flySpd.BackgroundTransparency = 1
+	ESP.labels.move.flySpd.Font = Enum.Font.Gotham
+	ESP.labels.move.flySpd.TextSize = 12
+	ESP.labels.move.flySpd.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.labels.move.flySpd.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.labels.move.flySpd.Size = UDim2.new(1, 0, 0, 20)
+	ESP.labels.move.flySpd.Parent = pageMove
 	local flyRow = Instance.new("Frame")
 	flyRow.BackgroundTransparency = 1
 	flyRow.Size = UDim2.new(1, 0, 0, 32)
@@ -4385,7 +4640,7 @@ function K.menuFillMoveTab(pageMove)
 	fDown.Font = Enum.Font.GothamBold
 	fDown.TextSize = 16
 	fDown.TextColor3 = Color3.new(1, 1, 1)
-	fDown.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	fDown.BackgroundColor3 = COL.btn
 	fDown.BorderSizePixel = 0
 	fDown.Parent = flyRow
 	K.roundCorners(fDown, 6)
@@ -4399,7 +4654,7 @@ function K.menuFillMoveTab(pageMove)
 	fUp.Font = Enum.Font.GothamBold
 	fUp.TextSize = 16
 	fUp.TextColor3 = Color3.new(1, 1, 1)
-	fUp.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	fUp.BackgroundColor3 = COL.btn
 	fUp.BorderSizePixel = 0
 	fUp.Parent = flyRow
 	K.roundCorners(fUp, 6)
@@ -4409,7 +4664,7 @@ function K.menuFillMoveTab(pageMove)
 	end)
 
 	K.addSectionLabel(pageMove, "NOCLIP")
-	Labels.move.noclip = K.makeToggleButton(pageMove, "Noclip: off", function()
+	ESP.labels.move.noclip = K.makeToggleButton(pageMove, "Noclip: off", function()
 		noclipOn = not noclipOn
 		K.setNoclipRunning()
 		K.refreshMoveLabels()
@@ -4425,14 +4680,14 @@ function K.menuFillMoveTab(pageMove)
 	wsLbl.Text = "Smooth forced movement based on Humanoid.MoveDirection."
 	wsLbl.Size = UDim2.new(1, 0, 0, 28)
 	wsLbl.Parent = pageMove
-	Labels.move.speed = Instance.new("TextLabel")
-	Labels.move.speed.BackgroundTransparency = 1
-	Labels.move.speed.Font = Enum.Font.Gotham
-	Labels.move.speed.TextSize = 12
-	Labels.move.speed.TextXAlignment = Enum.TextXAlignment.Left
-	Labels.move.speed.TextColor3 = Color3.fromRGB(200, 205, 220)
-	Labels.move.speed.Size = UDim2.new(1, 0, 0, 22)
-	Labels.move.speed.Parent = pageMove
+	ESP.labels.move.speed = Instance.new("TextLabel")
+	ESP.labels.move.speed.BackgroundTransparency = 1
+	ESP.labels.move.speed.Font = Enum.Font.Gotham
+	ESP.labels.move.speed.TextSize = 12
+	ESP.labels.move.speed.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.labels.move.speed.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.labels.move.speed.Size = UDim2.new(1, 0, 0, 22)
+	ESP.labels.move.speed.Parent = pageMove
 	local spdRow = Instance.new("Frame")
 	spdRow.BackgroundTransparency = 1
 	spdRow.Size = UDim2.new(1, 0, 0, 32)
@@ -4448,7 +4703,7 @@ function K.menuFillMoveTab(pageMove)
 	loopToggle.Font = Enum.Font.GothamBold
 	loopToggle.TextSize = 12
 	loopToggle.TextColor3 = Color3.new(1, 1, 1)
-	loopToggle.BackgroundColor3 = Color3.fromRGB(55, 60, 85)
+	loopToggle.BackgroundColor3 = COL.btn
 	loopToggle.BorderSizePixel = 0
 	loopToggle.Parent = spdRow
 	K.roundCorners(loopToggle, 6)
@@ -4464,7 +4719,7 @@ function K.menuFillMoveTab(pageMove)
 	spdDown.Font = Enum.Font.GothamBold
 	spdDown.TextSize = 16
 	spdDown.TextColor3 = Color3.new(1, 1, 1)
-	spdDown.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	spdDown.BackgroundColor3 = COL.btn
 	spdDown.BorderSizePixel = 0
 	spdDown.Parent = spdRow
 	K.roundCorners(spdDown, 6)
@@ -4478,7 +4733,7 @@ function K.menuFillMoveTab(pageMove)
 	spdUp.Font = Enum.Font.GothamBold
 	spdUp.TextSize = 16
 	spdUp.TextColor3 = Color3.new(1, 1, 1)
-	spdUp.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	spdUp.BackgroundColor3 = COL.btn
 	spdUp.BorderSizePixel = 0
 	spdUp.Parent = spdRow
 	K.roundCorners(spdUp, 6)
@@ -4492,7 +4747,7 @@ function K.menuFillMoveTab(pageMove)
 	spdReset.Font = Enum.Font.GothamBold
 	spdReset.TextSize = 12
 	spdReset.TextColor3 = Color3.new(1, 1, 1)
-	spdReset.BackgroundColor3 = Color3.fromRGB(55, 60, 85)
+	spdReset.BackgroundColor3 = COL.btn
 	spdReset.BorderSizePixel = 0
 	spdReset.Parent = spdRow
 	K.roundCorners(spdReset, 6)
@@ -4503,14 +4758,14 @@ function K.menuFillMoveTab(pageMove)
 		K.refreshMoveLabels()
 	end)
 
-	Labels.move.jump = Instance.new("TextLabel")
-	Labels.move.jump.BackgroundTransparency = 1
-	Labels.move.jump.Font = Enum.Font.Gotham
-	Labels.move.jump.TextSize = 12
-	Labels.move.jump.TextXAlignment = Enum.TextXAlignment.Left
-	Labels.move.jump.TextColor3 = Color3.fromRGB(200, 205, 220)
-	Labels.move.jump.Size = UDim2.new(1, 0, 0, 22)
-	Labels.move.jump.Parent = pageMove
+	ESP.labels.move.jump = Instance.new("TextLabel")
+	ESP.labels.move.jump.BackgroundTransparency = 1
+	ESP.labels.move.jump.Font = Enum.Font.Gotham
+	ESP.labels.move.jump.TextSize = 12
+	ESP.labels.move.jump.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.labels.move.jump.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.labels.move.jump.Size = UDim2.new(1, 0, 0, 22)
+	ESP.labels.move.jump.Parent = pageMove
 
 	K.addSectionLabel(pageMove, "TP TO SPAWN")
 	local tpSpawn = Instance.new("TextButton")
@@ -4519,7 +4774,7 @@ function K.menuFillMoveTab(pageMove)
 	tpSpawn.TextSize = 13
 	tpSpawn.Text = "Teleport to workspace.SpawnLocation (if any)"
 	tpSpawn.TextColor3 = Color3.new(1, 1, 1)
-	tpSpawn.BackgroundColor3 = Color3.fromRGB(42, 48, 72)
+	tpSpawn.BackgroundColor3 = COL.btn
 	tpSpawn.BorderSizePixel = 0
 	tpSpawn.Parent = pageMove
 	K.roundCorners(tpSpawn, 8)
@@ -4548,14 +4803,14 @@ function K.menuFillMoveTab(pageMove)
 	tpDistLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
 	tpDistLayout.Padding = UDim.new(0, 8)
 	tpDistLayout.Parent = tpDistRow
-	Labels.move.tpDist = Instance.new("TextLabel")
-	Labels.move.tpDist.BackgroundTransparency = 1
-	Labels.move.tpDist.Font = Enum.Font.Gotham
-	Labels.move.tpDist.TextSize = 12
-	Labels.move.tpDist.TextXAlignment = Enum.TextXAlignment.Left
-	Labels.move.tpDist.TextColor3 = Color3.fromRGB(200, 205, 220)
-	Labels.move.tpDist.Size = UDim2.new(1, -120, 1, 0)
-	Labels.move.tpDist.Parent = tpDistRow
+	ESP.labels.move.tpDist = Instance.new("TextLabel")
+	ESP.labels.move.tpDist.BackgroundTransparency = 1
+	ESP.labels.move.tpDist.Font = Enum.Font.Gotham
+	ESP.labels.move.tpDist.TextSize = 12
+	ESP.labels.move.tpDist.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.labels.move.tpDist.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.labels.move.tpDist.Size = UDim2.new(1, -120, 1, 0)
+	ESP.labels.move.tpDist.Parent = tpDistRow
 	tpDistRow.LayoutOrder = 0
 	K.refreshMoveLabels()
 
@@ -4565,12 +4820,12 @@ function K.menuFillMoveTab(pageMove)
 	tpDown.Font = Enum.Font.GothamBold
 	tpDown.TextSize = 16
 	tpDown.TextColor3 = Color3.new(1, 1, 1)
-	tpDown.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	tpDown.BackgroundColor3 = COL.btn
 	tpDown.BorderSizePixel = 0
 	tpDown.Parent = tpDistRow
 	K.roundCorners(tpDown, 6)
 	tpDown.MouseButton1Click:Connect(function()
-		tpCamDist = tpCamDist - 5
+		ESP.tpCamDist = ESP.tpCamDist - 5
 		K.refreshMoveLabels()
 	end)
 
@@ -4580,12 +4835,12 @@ function K.menuFillMoveTab(pageMove)
 	tpUp.Font = Enum.Font.GothamBold
 	tpUp.TextSize = 16
 	tpUp.TextColor3 = Color3.new(1, 1, 1)
-	tpUp.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	tpUp.BackgroundColor3 = COL.btn
 	tpUp.BorderSizePixel = 0
 	tpUp.Parent = tpDistRow
 	K.roundCorners(tpUp, 6)
 	tpUp.MouseButton1Click:Connect(function()
-		tpCamDist = tpCamDist + 5
+		ESP.tpCamDist = ESP.tpCamDist + 5
 		K.refreshMoveLabels()
 	end)
 
@@ -4595,7 +4850,7 @@ function K.menuFillMoveTab(pageMove)
 	tpFwd.TextSize = 13
 	tpFwd.Text = "TP forward"
 	tpFwd.TextColor3 = Color3.new(1, 1, 1)
-	tpFwd.BackgroundColor3 = Color3.fromRGB(42, 48, 72)
+	tpFwd.BackgroundColor3 = COL.btn
 	tpFwd.BorderSizePixel = 0
 	tpFwd.Parent = pageMove
 	K.roundCorners(tpFwd, 8)
@@ -4609,7 +4864,7 @@ function K.menuFillMoveTab(pageMove)
 	tpBack.TextSize = 13
 	tpBack.Text = "TP backward"
 	tpBack.TextColor3 = Color3.new(1, 1, 1)
-	tpBack.BackgroundColor3 = Color3.fromRGB(42, 48, 72)
+	tpBack.BackgroundColor3 = COL.btn
 	tpBack.BorderSizePixel = 0
 	tpBack.Parent = pageMove
 	K.roundCorners(tpBack, 8)
@@ -4623,7 +4878,7 @@ function K.menuFillMoveTab(pageMove)
 	tpLeft.TextSize = 13
 	tpLeft.Text = "TP left"
 	tpLeft.TextColor3 = Color3.new(1, 1, 1)
-	tpLeft.BackgroundColor3 = Color3.fromRGB(42, 48, 72)
+	tpLeft.BackgroundColor3 = COL.btn
 	tpLeft.BorderSizePixel = 0
 	tpLeft.Parent = pageMove
 	K.roundCorners(tpLeft, 8)
@@ -4637,7 +4892,7 @@ function K.menuFillMoveTab(pageMove)
 	tpRight.TextSize = 13
 	tpRight.Text = "TP right"
 	tpRight.TextColor3 = Color3.new(1, 1, 1)
-	tpRight.BackgroundColor3 = Color3.fromRGB(42, 48, 72)
+	tpRight.BackgroundColor3 = COL.btn
 	tpRight.BorderSizePixel = 0
 	tpRight.Parent = pageMove
 	K.roundCorners(tpRight, 8)
@@ -4655,14 +4910,14 @@ function K.menuFillMoveTab(pageMove)
 	rayLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
 	rayLayout.Padding = UDim.new(0, 8)
 	rayLayout.Parent = rayRow
-	Labels.move.tpRayDist = Instance.new("TextLabel")
-	Labels.move.tpRayDist.BackgroundTransparency = 1
-	Labels.move.tpRayDist.Font = Enum.Font.Gotham
-	Labels.move.tpRayDist.TextSize = 12
-	Labels.move.tpRayDist.TextXAlignment = Enum.TextXAlignment.Left
-	Labels.move.tpRayDist.TextColor3 = Color3.fromRGB(200, 205, 220)
-	Labels.move.tpRayDist.Size = UDim2.new(1, -120, 1, 0)
-	Labels.move.tpRayDist.Parent = rayRow
+	ESP.labels.move.tpRayDist = Instance.new("TextLabel")
+	ESP.labels.move.tpRayDist.BackgroundTransparency = 1
+	ESP.labels.move.tpRayDist.Font = Enum.Font.Gotham
+	ESP.labels.move.tpRayDist.TextSize = 12
+	ESP.labels.move.tpRayDist.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.labels.move.tpRayDist.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.labels.move.tpRayDist.Size = UDim2.new(1, -120, 1, 0)
+	ESP.labels.move.tpRayDist.Parent = rayRow
 
 	local rayDown = Instance.new("TextButton")
 	rayDown.Text = "−"
@@ -4670,12 +4925,12 @@ function K.menuFillMoveTab(pageMove)
 	rayDown.Font = Enum.Font.GothamBold
 	rayDown.TextSize = 16
 	rayDown.TextColor3 = Color3.new(1, 1, 1)
-	rayDown.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	rayDown.BackgroundColor3 = COL.btn
 	rayDown.BorderSizePixel = 0
 	rayDown.Parent = rayRow
 	K.roundCorners(rayDown, 6)
 	rayDown.MouseButton1Click:Connect(function()
-		tpRayMaxDist = tpRayMaxDist - 20
+		ESP.tpRayMaxDist = ESP.tpRayMaxDist - 20
 		K.refreshMoveLabels()
 	end)
 
@@ -4685,12 +4940,12 @@ function K.menuFillMoveTab(pageMove)
 	rayUp.Font = Enum.Font.GothamBold
 	rayUp.TextSize = 16
 	rayUp.TextColor3 = Color3.new(1, 1, 1)
-	rayUp.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	rayUp.BackgroundColor3 = COL.btn
 	rayUp.BorderSizePixel = 0
 	rayUp.Parent = rayRow
 	K.roundCorners(rayUp, 6)
 	rayUp.MouseButton1Click:Connect(function()
-		tpRayMaxDist = tpRayMaxDist + 20
+		ESP.tpRayMaxDist = ESP.tpRayMaxDist + 20
 		K.refreshMoveLabels()
 	end)
 
@@ -4700,7 +4955,7 @@ function K.menuFillMoveTab(pageMove)
 	tpRayBtn.TextSize = 13
 	tpRayBtn.Text = "TP to camera hit"
 	tpRayBtn.TextColor3 = Color3.new(1, 1, 1)
-	tpRayBtn.BackgroundColor3 = Color3.fromRGB(42, 48, 72)
+	tpRayBtn.BackgroundColor3 = COL.btn
 	tpRayBtn.BorderSizePixel = 0
 	tpRayBtn.Parent = pageMove
 	K.roundCorners(tpRayBtn, 8)
@@ -4836,19 +5091,19 @@ function K.menuFillWorldTab(pageWorld)
 	proxRefresh.TextSize = 12
 	proxRefresh.Text = "Refresh proximity prompt list"
 	proxRefresh.TextColor3 = Color3.new(1, 1, 1)
-	proxRefresh.BackgroundColor3 = Color3.fromRGB(42, 48, 72)
+	proxRefresh.BackgroundColor3 = COL.btn
 	proxRefresh.BorderSizePixel = 0
 	proxRefresh.Parent = pageWorld
 	K.roundCorners(proxRefresh, 6)
 
 	local proximityPromptScroll = Instance.new("ScrollingFrame")
 	proximityPromptScroll.Name = "ProximityPromptList"
-	proximityPromptScroll.BackgroundColor3 = Color3.fromRGB(18, 20, 34)
+	proximityPromptScroll.BackgroundColor3 = COL.listBg
 	proximityPromptScroll.BorderSizePixel = 0
 	proximityPromptScroll.Size = UDim2.new(1, 0, 0, 160)
 	proximityPromptScroll.ScrollBarThickness = 3
 	proximityPromptScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-	proximityPromptScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 130, 220)
+	proximityPromptScroll.ScrollBarImageColor3 = COL.accentSoft
 	proximityPromptScroll.ScrollingDirection = Enum.ScrollingDirection.Y
 	proximityPromptScroll.Active = true
 	proximityPromptScroll.Selectable = true
@@ -4879,8 +5134,8 @@ function K.menuFillWorldTab(pageWorld)
 			for _, prompt in ipairs(list) do
 				local b = Instance.new("TextButton")
 				b.Size = UDim2.new(1, -8, 0, 26)
-				b.BackgroundColor3 = Color3.fromRGB(32, 36, 52)
-				b.TextColor3 = Color3.new(1, 1, 1)
+				b.BackgroundColor3 = COL.listBg
+				b.TextColor3 = K.getReadableTextColor(b.BackgroundColor3)
 				b.Font = Enum.Font.Gotham
 				b.TextSize = 10
 				b.TextXAlignment = Enum.TextXAlignment.Left
@@ -4936,7 +5191,7 @@ function K.menuFillWorldTab(pageWorld)
 	btnGlow.Font = Enum.Font.GothamBold
 	btnGlow.TextSize = 13
 	btnGlow.TextColor3 = Color3.new(1, 1, 1)
-	btnGlow.BackgroundColor3 = Color3.fromRGB(55, 45, 95)
+	btnGlow.BackgroundColor3 = COL.btn
 	btnGlow.BorderSizePixel = 0
 	btnGlow.Parent = pageWorld
 	K.roundCorners(btnGlow, 8)
@@ -4952,7 +5207,7 @@ function K.menuFillWorldTab(pageWorld)
 	rescan.TextSize = 12
 	rescan.Text = "Scan world again (glow)"
 	rescan.TextColor3 = Color3.new(1, 1, 1)
-	rescan.BackgroundColor3 = Color3.fromRGB(42, 48, 72)
+	rescan.BackgroundColor3 = COL.btn
 	rescan.BorderSizePixel = 0
 	rescan.Parent = pageWorld
 	K.roundCorners(rescan, 8)
@@ -4977,23 +5232,23 @@ function K.menuFillWorldTab(pageWorld)
 	glowNote.Parent = pageWorld
 
 	K.addSectionLabel(pageWorld, "LIGHTING")
-	Labels.world.fb = K.makeToggleButton(pageWorld, "Fullbright: off", function()
+	ESP.labels.world.fb = K.makeToggleButton(pageWorld, "Fullbright: off", function()
 		K.applyFullbright(not fullbrightOn)
 		K.refreshWorldLabels()
 	end)
-	Labels.world.fog = K.makeToggleButton(pageWorld, "Clear fog: off", function()
+	ESP.labels.world.fog = K.makeToggleButton(pageWorld, "Clear fog: off", function()
 		K.applyFogClear(not fogClearOn)
 		K.refreshWorldLabels()
 	end)
 
-	Labels.world.fov = Instance.new("TextLabel")
-	Labels.world.fov.BackgroundTransparency = 1
-	Labels.world.fov.Font = Enum.Font.Gotham
-	Labels.world.fov.TextSize = 12
-	Labels.world.fov.TextXAlignment = Enum.TextXAlignment.Left
-	Labels.world.fov.TextColor3 = Color3.fromRGB(200, 205, 220)
-	Labels.world.fov.Size = UDim2.new(1, 0, 0, 22)
-	Labels.world.fov.Parent = pageWorld
+	ESP.labels.world.fov = Instance.new("TextLabel")
+	ESP.labels.world.fov.BackgroundTransparency = 1
+	ESP.labels.world.fov.Font = Enum.Font.Gotham
+	ESP.labels.world.fov.TextSize = 12
+	ESP.labels.world.fov.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.labels.world.fov.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.labels.world.fov.Size = UDim2.new(1, 0, 0, 22)
+	ESP.labels.world.fov.Parent = pageWorld
 	local fovRow = Instance.new("Frame")
 	fovRow.BackgroundTransparency = 1
 	fovRow.Size = UDim2.new(1, 0, 0, 32)
@@ -5009,7 +5264,7 @@ function K.menuFillWorldTab(pageWorld)
 	fovDown.Font = Enum.Font.GothamBold
 	fovDown.TextSize = 16
 	fovDown.TextColor3 = Color3.new(1, 1, 1)
-	fovDown.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	fovDown.BackgroundColor3 = COL.btn
 	fovDown.BorderSizePixel = 0
 	fovDown.Parent = fovRow
 	K.roundCorners(fovDown, 6)
@@ -5025,7 +5280,7 @@ function K.menuFillWorldTab(pageWorld)
 	fovUp.Font = Enum.Font.GothamBold
 	fovUp.TextSize = 16
 	fovUp.TextColor3 = Color3.new(1, 1, 1)
-	fovUp.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	fovUp.BackgroundColor3 = COL.btn
 	fovUp.BorderSizePixel = 0
 	fovUp.Parent = fovRow
 	K.roundCorners(fovUp, 6)
@@ -5037,18 +5292,18 @@ function K.menuFillWorldTab(pageWorld)
 	end)
 
 	K.addSectionLabel(pageWorld, "MORE (LOCAL)")
-	Labels.world.sh = K.makeToggleButton(pageWorld, "Global shadows: on", function()
+	ESP.labels.world.sh = K.makeToggleButton(pageWorld, "Global shadows: on", function()
 		K.applyShadowsOff(not shadowsOff)
 		K.refreshWorldLabels()
 	end)
-	Labels.world.clk = Instance.new("TextLabel")
-	Labels.world.clk.BackgroundTransparency = 1
-	Labels.world.clk.Font = Enum.Font.Gotham
-	Labels.world.clk.TextSize = 11
-	Labels.world.clk.TextXAlignment = Enum.TextXAlignment.Left
-	Labels.world.clk.TextColor3 = Color3.fromRGB(200, 205, 220)
-	Labels.world.clk.Size = UDim2.new(1, 0, 0, 22)
-	Labels.world.clk.Parent = pageWorld
+	ESP.labels.world.clk = Instance.new("TextLabel")
+	ESP.labels.world.clk.BackgroundTransparency = 1
+	ESP.labels.world.clk.Font = Enum.Font.Gotham
+	ESP.labels.world.clk.TextSize = 11
+	ESP.labels.world.clk.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.labels.world.clk.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.labels.world.clk.Size = UDim2.new(1, 0, 0, 22)
+	ESP.labels.world.clk.Parent = pageWorld
 	local clkRow = Instance.new("Frame")
 	clkRow.BackgroundTransparency = 1
 	clkRow.Size = UDim2.new(1, 0, 0, 32)
@@ -5087,7 +5342,7 @@ function K.menuFillWorldTab(pageWorld)
 		end
 		K.refreshWorldLabels()
 	end)
-	Labels.world.atm = K.makeToggleButton(pageWorld, "Lighter atmosphere: off", function()
+	ESP.labels.world.atm = K.makeToggleButton(pageWorld, "Lighter atmosphere: off", function()
 		K.applyAtmosphereClear(not atmosphereClearOn)
 		K.refreshWorldLabels()
 	end)
@@ -5107,46 +5362,46 @@ function K.menuFillClientTab(pageClient, screen)
 	espNote.Size = UDim2.new(1, 0, 0, 40)
 	espNote.Parent = pageClient
 
-	Labels.client.esp = K.makeToggleButton(pageClient, "Player ESP: off", function()
+	ESP.labels.client.esp = K.makeToggleButton(pageClient, "Player ESP: off", function()
 		ESP.on = not ESP.on
 		K.setEspRunning()
 		K.refreshClientLabels()
 	end)
-	Labels.client.tr = K.makeToggleButton(pageClient, "Tracers: off", function()
+	ESP.labels.client.tr = K.makeToggleButton(pageClient, "Tracers: off", function()
 		ESP.tracers = not ESP.tracers
 		K.refreshClientLabels()
 	end)
-	Labels.client.hp = K.makeToggleButton(pageClient, "ESP HP: on", function()
+	ESP.labels.client.hp = K.makeToggleButton(pageClient, "ESP HP: on", function()
 		ESP.hp = not ESP.hp
 		K.refreshClientLabels()
 	end)
-	Labels.client.nm = K.makeToggleButton(pageClient, "ESP names: on", function()
+	ESP.labels.client.nm = K.makeToggleButton(pageClient, "ESP names: on", function()
 		ESP.names = not ESP.names
 		K.refreshClientLabels()
 	end)
-	Labels.client.ds = K.makeToggleButton(pageClient, "ESP distance: on", function()
+	ESP.labels.client.ds = K.makeToggleButton(pageClient, "ESP distance: on", function()
 		ESP.dist = not ESP.dist
 		K.refreshClientLabels()
 	end)
-	Labels.client.tm = K.makeToggleButton(pageClient, "Team color: on", function()
+	ESP.labels.client.tm = K.makeToggleButton(pageClient, "Team color: on", function()
 		ESP.teamColor = not ESP.teamColor
 		K.refreshClientLabels()
 	end)
-	Labels.client.box = K.makeToggleButton(pageClient, "3D box on HRP: off", function()
+	ESP.labels.client.box = K.makeToggleButton(pageClient, "3D box on HRP: off", function()
 		ESP.boxEsp = not ESP.boxEsp
 		if ESP.on then
 			K.setEspRunning()
 		end
 		K.refreshClientLabels()
 	end)
-	Labels.client.chams = Instance.new("TextLabel")
-	Labels.client.chams.BackgroundTransparency = 1
-	Labels.client.chams.Font = Enum.Font.Gotham
-	Labels.client.chams.TextSize = 12
-	Labels.client.chams.TextXAlignment = Enum.TextXAlignment.Left
-	Labels.client.chams.TextColor3 = Color3.fromRGB(200, 205, 220)
-	Labels.client.chams.Size = UDim2.new(1, 0, 0, 22)
-	Labels.client.chams.Parent = pageClient
+	ESP.labels.client.chams = Instance.new("TextLabel")
+	ESP.labels.client.chams.BackgroundTransparency = 1
+	ESP.labels.client.chams.Font = Enum.Font.Gotham
+	ESP.labels.client.chams.TextSize = 12
+	ESP.labels.client.chams.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.labels.client.chams.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.labels.client.chams.Size = UDim2.new(1, 0, 0, 22)
+	ESP.labels.client.chams.Parent = pageClient
 	local chamsRow = Instance.new("Frame")
 	chamsRow.BackgroundTransparency = 1
 	chamsRow.Size = UDim2.new(1, 0, 0, 32)
@@ -5215,7 +5470,7 @@ function K.menuFillClientTab(pageClient, screen)
 
 	local targetSearchBox = Instance.new("TextBox")
 	targetSearchBox.Size = UDim2.new(1, 0, 0, 32)
-	targetSearchBox.BackgroundColor3 = Color3.fromRGB(30, 34, 50)
+	targetSearchBox.BackgroundColor3 = COL.inputBg
 	targetSearchBox.TextColor3 = Color3.new(1, 1, 1)
 	targetSearchBox.Font = Enum.Font.Gotham
 	targetSearchBox.TextSize = 13
@@ -5234,11 +5489,11 @@ function K.menuFillClientTab(pageClient, screen)
 	end)
 
 	ESP.targetScroll = Instance.new("ScrollingFrame")
-	ESP.targetScroll.BackgroundColor3 = Color3.fromRGB(18, 20, 34)
+	ESP.targetScroll.BackgroundColor3 = COL.listBg
 	ESP.targetScroll.BorderSizePixel = 0
 	ESP.targetScroll.Size = UDim2.new(1, 0, 0, 120)
 	ESP.targetScroll.ScrollBarThickness = 3
-	ESP.targetScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 130, 220)
+	ESP.targetScroll.ScrollBarImageColor3 = COL.accentSoft
 	ESP.targetScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	ESP.targetScroll.CanvasSize = UDim2.new()
 	ESP.targetScroll.Parent = pageClient
@@ -5252,7 +5507,7 @@ function K.menuFillClientTab(pageClient, screen)
 
 	task.defer(K.refreshEspTargetList)
 
-	Labels.client.trOrigin = K.makeToggleButton(pageClient, "Tracer origin: bottom", function()
+	ESP.labels.client.trOrigin = K.makeToggleButton(pageClient, "Tracer origin: bottom", function()
 		if ESP.tracerOriginMode == "bottom" then
 			ESP.tracerOriginMode = "center"
 		elseif ESP.tracerOriginMode == "center" then
@@ -5273,14 +5528,14 @@ function K.menuFillClientTab(pageClient, screen)
 	trThkLayout.Padding = UDim.new(0, 8)
 	trThkLayout.Parent = trThkRow
 
-	Labels.client.trThk = Instance.new("TextLabel")
-	Labels.client.trThk.BackgroundTransparency = 1
-	Labels.client.trThk.Font = Enum.Font.Gotham
-	Labels.client.trThk.TextSize = 12
-	Labels.client.trThk.TextXAlignment = Enum.TextXAlignment.Left
-	Labels.client.trThk.TextColor3 = Color3.fromRGB(200, 205, 220)
-	Labels.client.trThk.Size = UDim2.new(1, -120, 1, 0)
-	Labels.client.trThk.Parent = trThkRow
+	ESP.labels.client.trThk = Instance.new("TextLabel")
+	ESP.labels.client.trThk.BackgroundTransparency = 1
+	ESP.labels.client.trThk.Font = Enum.Font.Gotham
+	ESP.labels.client.trThk.TextSize = 12
+	ESP.labels.client.trThk.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.labels.client.trThk.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.labels.client.trThk.Size = UDim2.new(1, -120, 1, 0)
+	ESP.labels.client.trThk.Parent = trThkRow
 
 	local trDown = Instance.new("TextButton")
 	trDown.Text = "−"
@@ -5288,7 +5543,7 @@ function K.menuFillClientTab(pageClient, screen)
 	trDown.Font = Enum.Font.GothamBold
 	trDown.TextSize = 16
 	trDown.TextColor3 = Color3.new(1, 1, 1)
-	trDown.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	trDown.BackgroundColor3 = COL.btn
 	trDown.BorderSizePixel = 0
 	trDown.Parent = trThkRow
 	K.roundCorners(trDown, 6)
@@ -5303,7 +5558,7 @@ function K.menuFillClientTab(pageClient, screen)
 	trUp.Font = Enum.Font.GothamBold
 	trUp.TextSize = 16
 	trUp.TextColor3 = Color3.new(1, 1, 1)
-	trUp.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	trUp.BackgroundColor3 = COL.btn
 	trUp.BorderSizePixel = 0
 	trUp.Parent = trThkRow
 	K.roundCorners(trUp, 6)
@@ -5343,7 +5598,7 @@ function K.menuFillClientTab(pageClient, screen)
 				statsGui.Name = "TesterStats"
 				statsGui.Size = UDim2.fromOffset(260, 56)
 				statsGui.Position = UDim2.new(1, -270, 0, 80)
-				statsGui.BackgroundColor3 = Color3.fromRGB(20, 22, 35)
+				statsGui.BackgroundColor3 = COL.listBg
 				statsGui.BackgroundTransparency = 0.15
 				statsGui.Parent = screen
 				K.roundCorners(statsGui, 8)
@@ -5456,7 +5711,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	K.addSectionLabel(pageCombat, "Name contains (comma)")
 	hitboxPatternBox = Instance.new("TextBox")
 	hitboxPatternBox.Size = UDim2.new(1, 0, 0, 34)
-	hitboxPatternBox.BackgroundColor3 = Color3.fromRGB(30, 34, 50)
+	hitboxPatternBox.BackgroundColor3 = COL.inputBg
 	hitboxPatternBox.TextColor3 = Color3.new(1, 1, 1)
 	hitboxPatternBox.Font = Enum.Font.Gotham
 	hitboxPatternBox.TextSize = 13
@@ -5488,7 +5743,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	hbAmDown.Font = Enum.Font.GothamBold
 	hbAmDown.TextSize = 16
 	hbAmDown.TextColor3 = Color3.new(1, 1, 1)
-	hbAmDown.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	hbAmDown.BackgroundColor3 = COL.btn
 	hbAmDown.BorderSizePixel = 0
 	hbAmDown.Parent = hbAmtRow
 	K.roundCorners(hbAmDown, 6)
@@ -5511,7 +5766,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	hbAmUp.Font = Enum.Font.GothamBold
 	hbAmUp.TextSize = 16
 	hbAmUp.TextColor3 = Color3.new(1, 1, 1)
-	hbAmUp.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	hbAmUp.BackgroundColor3 = COL.btn
 	hbAmUp.BorderSizePixel = 0
 	hbAmUp.Parent = hbAmtRow
 	K.roundCorners(hbAmUp, 6)
@@ -5535,7 +5790,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	hbRescan.TextSize = 12
 	hbRescan.Text = "Re-scan Workspace for name matches"
 	hbRescan.TextColor3 = Color3.new(1, 1, 1)
-	hbRescan.BackgroundColor3 = Color3.fromRGB(42, 48, 72)
+	hbRescan.BackgroundColor3 = COL.btn
 	hbRescan.BorderSizePixel = 0
 	hbRescan.AutoButtonColor = false
 	hbRescan.Parent = pageCombat
@@ -5593,7 +5848,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 
 	local animSearchBox = Instance.new("TextBox")
 	animSearchBox.Size = UDim2.new(1, -150, 1, 0)
-	animSearchBox.BackgroundColor3 = Color3.fromRGB(30, 34, 50)
+	animSearchBox.BackgroundColor3 = COL.inputBg
 	animSearchBox.TextColor3 = Color3.new(1, 1, 1)
 	animSearchBox.Font = Enum.Font.Gotham
 	animSearchBox.TextSize = 13
@@ -5614,7 +5869,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 
 	local pathFilterBox = Instance.new("TextBox")
 	pathFilterBox.Size = UDim2.new(1, 0, 0, 32)
-	pathFilterBox.BackgroundColor3 = Color3.fromRGB(30, 34, 50)
+	pathFilterBox.BackgroundColor3 = COL.inputBg
 	pathFilterBox.TextColor3 = Color3.new(1, 1, 1)
 	pathFilterBox.Font = Enum.Font.Gotham
 	pathFilterBox.TextSize = 13
@@ -5645,11 +5900,11 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	end)
 
 	animScanScroll = Instance.new("ScrollingFrame")
-	animScanScroll.BackgroundColor3 = Color3.fromRGB(18, 20, 34)
+	animScanScroll.BackgroundColor3 = COL.listBg
 	animScanScroll.BorderSizePixel = 0
 	animScanScroll.Size = UserInputService.TouchEnabled and UDim2.new(1, 0, 0, 180) or UDim2.new(1, 0, 0, 120)
 	animScanScroll.ScrollBarThickness = UserInputService.TouchEnabled and 6 or 3
-	animScanScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 130, 220)
+	animScanScroll.ScrollBarImageColor3 = COL.accentSoft
 	animScanScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	animScanScroll.CanvasSize = UDim2.new()
 	animScanScroll.Active = true
@@ -5701,7 +5956,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	tgtPrev.Font = Enum.Font.GothamBold
 	tgtPrev.TextSize = 12
 	tgtPrev.TextColor3 = Color3.new(1, 1, 1)
-	tgtPrev.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	tgtPrev.BackgroundColor3 = COL.btn
 	tgtPrev.BorderSizePixel = 0
 	tgtPrev.Parent = tgtRow
 	K.roundCorners(tgtPrev, 6)
@@ -5711,7 +5966,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	tgtNext.Font = Enum.Font.GothamBold
 	tgtNext.TextSize = 12
 	tgtNext.TextColor3 = Color3.new(1, 1, 1)
-	tgtNext.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
+	tgtNext.BackgroundColor3 = COL.btn
 	tgtNext.BorderSizePixel = 0
 	tgtNext.Parent = tgtRow
 	K.roundCorners(tgtNext, 6)
@@ -5721,7 +5976,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	tgtRefresh.Font = Enum.Font.GothamBold
 	tgtRefresh.TextSize = 12
 	tgtRefresh.TextColor3 = Color3.new(1, 1, 1)
-	tgtRefresh.BackgroundColor3 = Color3.fromRGB(55, 60, 85)
+	tgtRefresh.BackgroundColor3 = COL.btn
 	tgtRefresh.BorderSizePixel = 0
 	tgtRefresh.Parent = tgtRow
 	K.roundCorners(tgtRefresh, 6)
@@ -5812,8 +6067,8 @@ function K.menuFillCombatTab(pageCombat)
 				else
 				local b = Instance.new("TextButton")
 				b.Size = UDim2.new(1, -4, 0, 26)
-				b.BackgroundColor3 = loopTpUserId == plr.UserId and Color3.fromRGB(50, 90, 70) or Color3.fromRGB(32, 36, 52)
-				b.TextColor3 = Color3.new(1, 1, 1)
+				b.BackgroundColor3 = loopTpUserId == plr.UserId and Color3.fromRGB(50, 90, 70) or COL.listBg
+				b.TextColor3 = K.getReadableTextColor(b.BackgroundColor3)
 				b.Font = Enum.Font.Gotham
 				b.TextSize = 11
 				b.Text = plr.Name
@@ -5846,7 +6101,7 @@ function K.menuFillCombatTab(pageCombat)
 
 	local loopSearch = Instance.new("TextBox")
 	loopSearch.Size = UDim2.new(1, 0, 0, 30)
-	loopSearch.BackgroundColor3 = Color3.fromRGB(30, 34, 50)
+	loopSearch.BackgroundColor3 = COL.inputBg
 	loopSearch.TextColor3 = Color3.new(1, 1, 1)
 	loopSearch.Font = Enum.Font.Gotham
 	loopSearch.TextSize = 12
@@ -5861,7 +6116,7 @@ function K.menuFillCombatTab(pageCombat)
 	end)
 
 	loopTpScroll = Instance.new("ScrollingFrame")
-	loopTpScroll.BackgroundColor3 = Color3.fromRGB(18, 20, 34)
+	loopTpScroll.BackgroundColor3 = COL.listBg
 	loopTpScroll.BorderSizePixel = 0
 	loopTpScroll.Size = UDim2.new(1, 0, 0, 88)
 	loopTpScroll.ScrollBarThickness = 3
@@ -6007,8 +6262,8 @@ function K.menuFillCombatTab(pageCombat)
 				else
 				local b = Instance.new("TextButton")
 				b.Size = UDim2.new(1, -4, 0, 26)
-				b.BackgroundColor3 = combatStrafeUserId == plr.UserId and Color3.fromRGB(50, 90, 70) or Color3.fromRGB(32, 36, 52)
-				b.TextColor3 = Color3.new(1, 1, 1)
+				b.BackgroundColor3 = combatStrafeUserId == plr.UserId and Color3.fromRGB(50, 90, 70) or COL.listBg
+				b.TextColor3 = K.getReadableTextColor(b.BackgroundColor3)
 				b.Font = Enum.Font.Gotham
 				b.TextSize = 11
 				b.Text = plr.Name
@@ -6041,7 +6296,7 @@ function K.menuFillCombatTab(pageCombat)
 
 	local strafeSearch = Instance.new("TextBox")
 	strafeSearch.Size = UDim2.new(1, 0, 0, 30)
-	strafeSearch.BackgroundColor3 = Color3.fromRGB(30, 34, 50)
+	strafeSearch.BackgroundColor3 = COL.inputBg
 	strafeSearch.TextColor3 = Color3.new(1, 1, 1)
 	strafeSearch.Font = Enum.Font.Gotham
 	strafeSearch.TextSize = 12
@@ -6056,7 +6311,7 @@ function K.menuFillCombatTab(pageCombat)
 	end)
 
 	combatStrafeScroll = Instance.new("ScrollingFrame")
-	combatStrafeScroll.BackgroundColor3 = Color3.fromRGB(18, 20, 34)
+	combatStrafeScroll.BackgroundColor3 = COL.listBg
 	combatStrafeScroll.BorderSizePixel = 0
 	combatStrafeScroll.Size = UDim2.new(1, 0, 0, 72)
 	combatStrafeScroll.ScrollBarThickness = 3
@@ -6195,6 +6450,99 @@ function K.menuFillCombatTab(pageCombat)
 		btn.Text = combatResistNoTpOn and "Resist NoTP lock: on" or "Resist NoTP lock: off"
 		K.setCombatResistRunning()
 	end)
+	K.addSectionLabel(pageCombat, "AUTOFORCE TP (VOID BOUNCE)")
+	local aftNote = Instance.new("TextLabel")
+	aftNote.BackgroundTransparency = 1
+	aftNote.Font = Enum.Font.Gotham
+	aftNote.TextSize = 10
+	aftNote.TextXAlignment = Enum.TextXAlignment.Left
+	aftNote.TextWrapped = true
+	aftNote.TextColor3 = COL.muted
+	aftNote.Size = UDim2.new(1, 0, 0, 34)
+	aftNote.Text = "If queue/event scripts force-move or hard-stick your character, this sends you very far down into void space, then snaps you back."
+	aftNote.Parent = pageCombat
+	ESP.autoForceTpLabel = Instance.new("TextLabel")
+	ESP.autoForceTpLabel.BackgroundTransparency = 1
+	ESP.autoForceTpLabel.Font = Enum.Font.Gotham
+	ESP.autoForceTpLabel.TextSize = 10
+	ESP.autoForceTpLabel.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.autoForceTpLabel.TextWrapped = true
+	ESP.autoForceTpLabel.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.autoForceTpLabel.Size = UDim2.new(1, 0, 0, 34)
+	ESP.autoForceTpLabel.Parent = pageCombat
+	K.makeToggleButton(pageCombat, "AutoForce TP: off", function(btn)
+		ESP.autoForceTpOn = not ESP.autoForceTpOn
+		btn.Text = ESP.autoForceTpOn and "AutoForce TP: on" or "AutoForce TP: off"
+		K.setAutoForceTpRunning()
+	end)
+	K.makeToggleButton(pageCombat, "AFT loop mode: off", function(btn)
+		ESP.autoForceTpLoopMode = not ESP.autoForceTpLoopMode
+		btn.Text = ESP.autoForceTpLoopMode and "AFT loop mode: on" or "AFT loop mode: off"
+		K.setAutoForceTpRunning()
+	end)
+	K.makeToggleButton(pageCombat, "AFT on grab: off", function(btn)
+		ESP.autoForceTpOnGrab = not ESP.autoForceTpOnGrab
+		btn.Text = ESP.autoForceTpOnGrab and "AFT on grab: on" or "AFT on grab: off"
+		K.setAutoForceTpRunning()
+	end)
+	numRow("AFT trigger dist", function()
+		return ESP.autoForceTpTriggerDist
+	end, function(v)
+		ESP.autoForceTpTriggerDist = v
+	end, 1, K.setAutoForceTpRunning)
+	numRow("AFT void dist", function()
+		return ESP.autoForceTpDistance
+	end, function(v)
+		ESP.autoForceTpDistance = v
+	end, 5000000, K.setAutoForceTpRunning)
+	numRow("AFT cooldown", function()
+		return ESP.autoForceTpCooldown
+	end, function(v)
+		ESP.autoForceTpCooldown = v
+	end, 0.1, K.setAutoForceTpRunning)
+	numRow("AFT return delay", function()
+		return ESP.autoForceTpReturnDelay
+	end, function(v)
+		ESP.autoForceTpReturnDelay = v
+	end, 0.02, K.setAutoForceTpRunning)
+	numRow("AFT grab cd", function()
+		return ESP.autoForceTpGrabCooldown
+	end, function(v)
+		ESP.autoForceTpGrabCooldown = v
+	end, 0.05, K.setAutoForceTpRunning)
+	numRow("AFT burst count", function()
+		return ESP.autoForceTpBurstCount
+	end, function(v)
+		ESP.autoForceTpBurstCount = v
+	end, 1, K.setAutoForceTpRunning)
+	K.makeToggleButton(pageCombat, "AutoForce TP now", function()
+		ESP.autoForceTpLast = 0
+		ESP.autoForceTpPending = false
+		local r = K.getRoot()
+		if r then
+			local saved = r.CFrame
+			local look = saved.LookVector
+		local far = math.clamp(ESP.autoForceTpDistance, 1000000, 1000000000)
+			local voidPos = saved.Position + Vector3.new(0, -far, 0)
+			r.CFrame = CFrame.new(voidPos, voidPos + look)
+			r.AssemblyLinearVelocity = Vector3.zero
+			r.AssemblyAngularVelocity = Vector3.zero
+			task.delay(math.max(0.005, ESP.autoForceTpReturnDelay), function()
+				local r2 = K.getRoot()
+				if r2 then
+					r2.CFrame = saved
+					r2.AssemblyLinearVelocity = Vector3.zero
+					r2.AssemblyAngularVelocity = Vector3.zero
+				end
+			end)
+		end
+	end)
+	K.makeToggleButton(pageCombat, "AFT burst now (void spam)", function()
+		K.runAutoForceTpBurst()
+	end)
+	K.makeToggleButton(pageCombat, "Stop AFT burst", function()
+		ESP.autoForceTpBurstCancel = true
+	end)
 
 	Players.PlayerAdded:Connect(function()
 		task.defer(refreshStrafePickList)
@@ -6206,6 +6554,7 @@ function K.menuFillCombatTab(pageCombat)
 	task.defer(K.setCombatStrafeRunning)
 	task.defer(K.setCombatBoostRunning)
 	task.defer(K.setCombatResistRunning)
+	task.defer(K.setAutoForceTpRunning)
 
 	K.addSectionLabel(pageCombat, "OP COMBAT (LOCAL)")
 	K.makeToggleButton(pageCombat, "Face-lock to target: off", function(btn)
@@ -6246,6 +6595,29 @@ end
 
 function K.menuFillCustomizeTab(pageCustom, menuRefs)
 	local numRows = {}
+	local rgbSyncers = {}
+
+	local function snapMenuCfgFromCol()
+		local function tri(c3)
+			return {
+				math.clamp(math.floor(c3.R * 255 + 0.5), 0, 255),
+				math.clamp(math.floor(c3.G * 255 + 0.5), 0, 255),
+				math.clamp(math.floor(c3.B * 255 + 0.5), 0, 255),
+			}
+		end
+		MENU_CFG.panel = tri(COL.bg)
+		MENU_CFG.top = tri(COL.bgTop)
+		MENU_CFG.tabsIdle = tri(COL.tabIdle)
+		MENU_CFG.tabsOn = tri(COL.tabOn)
+		MENU_CFG.outline = tri(COL.tabGlow)
+		MENU_CFG.buttons = tri(COL.btn)
+		MENU_CFG.buttonsHot = tri(COL.btnHot)
+		MENU_CFG.text = tri(COL.muted)
+		MENU_CFG.accent = tri(COL.accent)
+		MENU_CFG.accentSoft = tri(COL.accentSoft)
+		MENU_CFG.list = tri(COL.listBg)
+		MENU_CFG.input = tri(COL.inputBg)
+	end
 
 	local function ensureScale()
 		if menuRefs.scaleObj and menuRefs.scaleObj.Parent then
@@ -6279,11 +6651,15 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		down.Size = UDim2.fromOffset(28, 24)
 		down.Text = "-"
 		down.Parent = row
+		down.AutoButtonColor = false
+		down:SetAttribute("KitStepBtn", true)
 		K.roundCorners(down, 4)
 		local up = Instance.new("TextButton")
 		up.Size = UDim2.fromOffset(28, 24)
 		up.Text = "+"
 		up.Parent = row
+		up.AutoButtonColor = false
+		up:SetAttribute("KitStepBtn", true)
 		K.roundCorners(up, 4)
 		local rec = {}
 		rec.sync = function()
@@ -6319,6 +6695,7 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		if menuRefs.borderStroke then
 			menuRefs.borderStroke.Thickness = ESP.menuBorderThickness
 			menuRefs.borderStroke.Transparency = ESP.menuBorderAlpha
+			menuRefs.borderStroke.Color = COL.tabGlow
 		end
 		if menuRefs.subtitle then
 			menuRefs.subtitle.Visible = ESP.menuShowSubtitle
@@ -6334,8 +6711,77 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 				b.TextSize = ESP.menuTabTextSize
 			end
 		end
+		if menuRefs.topBarGrad then
+			menuRefs.topBarGrad.Color = ColorSequence.new(COL.bgTop, COL.tabIdle)
+		end
+		if menuRefs.shellGrad then
+			menuRefs.shellGrad.Color = ColorSequence.new(COL.bg, COL.bgTop)
+		end
+		if menuRefs.title then
+			menuRefs.title.TextColor3 = Color3.fromRGB(235, 235, 235)
+		end
+		if menuRefs.closeBtn then
+			menuRefs.closeBtn.BackgroundColor3 = COL.tabIdle
+			menuRefs.closeBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
+		end
+		if menuRefs.tabScroll then
+			menuRefs.tabScroll.ScrollBarImageColor3 = COL.tabGlow
+		end
+		if menuRefs.mobileOpenBtn then
+			menuRefs.mobileOpenBtn.BackgroundColor3 = COL.tabIdle
+			menuRefs.mobileOpenBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
+		end
+		if menuRefs.mobileOpenStroke then
+			menuRefs.mobileOpenStroke.Color = COL.tabGlow
+		end
+		if panel then
+			for _, d in ipairs(panel:GetDescendants()) do
+				if d:IsA("TextButton") and d.Parent ~= menuRefs.tabScroll and d ~= menuRefs.closeBtn then
+					if d:GetAttribute("KitStepBtn") then
+						d.AutoButtonColor = false
+						d.BackgroundColor3 = COL.btn
+						d.TextColor3 = K.getReadableTextColor(COL.btn)
+						local ss = d:FindFirstChildOfClass("UIStroke")
+						if ss then
+							ss.Color = COL.tabGlow
+						end
+					else
+						local g = d:FindFirstChildOfClass("UIGradient")
+						if g then
+							d.BackgroundColor3 = COL.btn
+							d.TextColor3 = K.getReadableTextColor(COL.btn)
+							g.Color = ColorSequence.new(COL.btn, COL.btnHot)
+						else
+							d.TextColor3 = K.getReadableTextColor(d.BackgroundColor3)
+						end
+						local s = d:FindFirstChildOfClass("UIStroke")
+						if s then
+							s.Color = COL.tabGlow
+						end
+					end
+				elseif d:IsA("TextBox") then
+					d.BackgroundColor3 = COL.inputBg
+					d.TextColor3 = Color3.fromRGB(250, 250, 250)
+					d.PlaceholderColor3 = Color3.fromRGB(205, 205, 205)
+				elseif d:IsA("ScrollingFrame") then
+					d.ScrollBarImageColor3 = COL.accentSoft
+					if d ~= menuRefs.tabScroll then
+						d.BackgroundColor3 = COL.bgTop
+					end
+				elseif d:IsA("TextLabel") then
+					if d:GetAttribute("KitMutedLabel") then
+						d.TextColor3 = COL.muted
+					elseif d.TextColor3 == COL.muted or d.TextColor3 == Color3.fromRGB(200, 205, 220) then
+						d.TextColor3 = COL.muted
+					end
+				end
+			end
+		end
 		if menuRefs.screen then
 			menuRefs.screen.DisplayOrder = ESP.menuAlwaysTop and 50 or 0
+		end
+		for _, rs in ipairs(rgbSyncers) do
+			pcall(rs)
 		end
 		ensureScale().Scale = ESP.menuScale
 		menuRefs.dragLocked = ESP.menuDragLock
@@ -6360,9 +6806,39 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 				ESP.menuRainbowConn = nil
 			end
 			if menuRefs.borderStroke then
-				menuRefs.borderStroke.Color = Color3.fromRGB(70, 140, 255)
+				menuRefs.borderStroke.Color = COL.tabGlow
 			end
 		end
+	end
+
+	local function applySimpleTheme(base, contrast, accentShift)
+		local function byte(n)
+			return math.clamp(math.floor(n + 0.5), 0, 255)
+		end
+		local b = byte(base)
+		local c = byte(contrast)
+		local a = math.clamp(math.floor(accentShift + 0.5), -160, 160)
+		MENU_CFG.themeTone = b
+		MENU_CFG.textContrast = c
+		MENU_CFG.accentShift = a
+		COL.bg = Color3.fromRGB(b, b, b)
+		COL.bgTop = Color3.fromRGB(byte(b - 20), byte(b - 20), byte(b - 20))
+		COL.tabIdle = Color3.fromRGB(byte(b - 38), byte(b - 38), byte(b - 38))
+		COL.tabOn = Color3.fromRGB(byte(b - 80), byte(b - 80), byte(b - 80))
+		COL.btn = Color3.fromRGB(byte(b - 56), byte(b - 56), byte(b - 56))
+		COL.btnHot = Color3.fromRGB(byte(b - 74), byte(b - 74), byte(b - 74))
+		COL.muted = Color3.fromRGB(c, c, c)
+		COL.tabGlow = Color3.fromRGB(byte(c - 10), byte(c - 10), byte(c - 10))
+		local ac = byte((b - 88) + a)
+		local ac2 = byte(ac - 18)
+		local lb = byte((b - 168) + math.floor(a * 0.4))
+		local ib = byte((b - 48) + math.floor(a * 0.4))
+		COL.accent = Color3.fromRGB(ac, ac, ac)
+		COL.accentSoft = Color3.fromRGB(ac2, ac2, ac2)
+		COL.listBg = Color3.fromRGB(lb, lb, lb)
+		COL.inputBg = Color3.fromRGB(ib, ib, ib)
+		snapMenuCfgFromCol()
+		applyMenuVisuals()
 	end
 
 	K.addSectionLabel(pageCustom, "SIZE AND LAYOUT")
@@ -6392,6 +6868,154 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 	end, 1, "%.0f")
 
 	K.addSectionLabel(pageCustom, "VISUAL TUNING")
+	makeNumRow("Theme tone", function()
+		return math.floor(COL.bg.R * 255 + 0.5)
+	end, function(v)
+		applySimpleTheme(v, MENU_CFG.textContrast, MENU_CFG.accentShift)
+	end, 5, "%.0f")
+	makeNumRow("Accent strength", function()
+		return math.floor(COL.tabOn.R * 255 + 0.5)
+	end, function(v)
+		local n = math.clamp(math.floor(v + 0.5), 0, 255)
+		COL.tabOn = Color3.fromRGB(n, n, n)
+		COL.btn = Color3.fromRGB(math.clamp(n + 20, 0, 255), math.clamp(n + 20, 0, 255), math.clamp(n + 20, 0, 255))
+		COL.btnHot = Color3.fromRGB(math.clamp(n + 2, 0, 255), math.clamp(n + 2, 0, 255), math.clamp(n + 2, 0, 255))
+		snapMenuCfgFromCol()
+		applyMenuVisuals()
+	end, 5, "%.0f")
+	makeNumRow("Text contrast", function()
+		return MENU_CFG.textContrast
+	end, function(v)
+		applySimpleTheme(MENU_CFG.themeTone, v, MENU_CFG.accentShift)
+	end, 4, "%.0f")
+	makeNumRow("Accent shift", function()
+		return MENU_CFG.accentShift
+	end, function(v)
+		applySimpleTheme(MENU_CFG.themeTone, MENU_CFG.textContrast, v)
+	end, 4, "%.0f")
+	K.addSectionLabel(pageCustom, "THEME PRESETS")
+	local monoDarkBtn = K.makeToggleButton(pageCustom, "Preset: Dark gray", function()
+		applySimpleTheme(95, 228, 0)
+	end)
+	monoDarkBtn.BackgroundColor3 = COL.btn
+	local monoMidBtn = K.makeToggleButton(pageCustom, "Preset: Mid gray", function()
+		applySimpleTheme(125, 228, 0)
+	end)
+	monoMidBtn.BackgroundColor3 = COL.btn
+	local monoLightBtn = K.makeToggleButton(pageCustom, "Preset: Light gray", function()
+		applySimpleTheme(150, 228, 0)
+	end)
+	monoLightBtn.BackgroundColor3 = COL.btn
+	K.addSectionLabel(pageCustom, "COLORS (swatch + R/G/B)")
+	local rgbHint = Instance.new("TextLabel")
+	rgbHint.BackgroundTransparency = 1
+	rgbHint.Font = Enum.Font.Gotham
+	rgbHint.TextSize = 10
+	rgbHint.TextXAlignment = Enum.TextXAlignment.Left
+	rgbHint.TextWrapped = true
+	rgbHint.TextColor3 = COL.muted
+	rgbHint:SetAttribute("KitMutedLabel", true)
+	rgbHint.Text = "Square shows the live color. Theme tone / presets use a neutral ramp; after that, edit RGB here. Defaults: table MENU_CFG near top of script."
+	rgbHint.Size = UDim2.new(1, 0, 0, 36)
+	rgbHint.Parent = pageCustom
+	local function rgbReadout(title, c)
+		return string.format("%s  R %.0f  G %.0f  B %.0f", title, c.R * 255, c.G * 255, c.B * 255)
+	end
+	local function makeRgbBlock(title, getter, setter)
+		local label = Instance.new("TextLabel")
+		label.BackgroundTransparency = 1
+		label.Size = UDim2.new(1, 0, 0, 20)
+		label.Font = Enum.Font.Gotham
+		label.TextSize = 11
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextColor3 = COL.muted
+		label:SetAttribute("KitMutedLabel", true)
+		label.Parent = pageCustom
+		local row = Instance.new("Frame")
+		row.BackgroundTransparency = 1
+		row.Size = UDim2.new(1, 0, 0, 30)
+		row.Parent = pageCustom
+		local lay = Instance.new("UIListLayout", row)
+		lay.FillDirection = Enum.FillDirection.Horizontal
+		lay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+		lay.VerticalAlignment = Enum.VerticalAlignment.Center
+		lay.Padding = UDim.new(0, 6)
+		local sw = Instance.new("Frame")
+		sw.BorderSizePixel = 0
+		sw.Size = UDim2.fromOffset(48, 24)
+		sw.LayoutOrder = -100
+		sw.Parent = row
+		K.roundCorners(sw, 6)
+		local swS = Instance.new("UIStroke", sw)
+		swS.Thickness = 1
+		swS.Transparency = 0.4
+		swS.Color = COL.tabGlow
+		local function sync()
+			local cur = getter()
+			label.Text = rgbReadout(title, cur)
+			sw.BackgroundColor3 = cur
+		end
+		local function addBtn(txt, channel, delta)
+			local b = Instance.new("TextButton")
+			b.Size = UDim2.fromOffset(40, 26)
+			b.Text = txt
+			b.Font = Enum.Font.GothamBold
+			b.TextSize = 11
+			b.AutoButtonColor = false
+			b:SetAttribute("KitStepBtn", true)
+			b.Parent = row
+			K.roundCorners(b, 6)
+			b.Activated:Connect(function()
+				local c = getter()
+				local r, g, b2 = c.R * 255, c.G * 255, c.B * 255
+				if channel == "r" then
+					r += delta
+				elseif channel == "g" then
+					g += delta
+				else
+					b2 += delta
+				end
+				setter(Color3.fromRGB(
+					math.clamp(math.floor(r + 0.5), 0, 255),
+					math.clamp(math.floor(g + 0.5), 0, 255),
+					math.clamp(math.floor(b2 + 0.5), 0, 255)
+				))
+				snapMenuCfgFromCol()
+				applyMenuVisuals()
+				sync()
+			end)
+		end
+		addBtn("R-", "r", -5)
+		addBtn("R+", "r", 5)
+		addBtn("G-", "g", -5)
+		addBtn("G+", "g", 5)
+		addBtn("B-", "b", -5)
+		addBtn("B+", "b", 5)
+		table.insert(rgbSyncers, sync)
+		sync()
+	end
+	makeRgbBlock("Panel", function()
+		return COL.bg
+	end, function(v)
+		COL.bg = v
+	end)
+	makeRgbBlock("Buttons", function()
+		return COL.btn
+	end, function(v)
+		COL.btn = v
+		COL.btnHot = v:Lerp(Color3.new(0, 0, 0), 0.2)
+	end)
+	makeRgbBlock("Accent", function()
+		return COL.accent
+	end, function(v)
+		COL.accent = v
+		COL.accentSoft = v:Lerp(Color3.new(0, 0, 0), 0.35)
+	end)
+	makeRgbBlock("Text", function()
+		return COL.muted
+	end, function(v)
+		COL.muted = v
+	end)
 	makeNumRow("Background alpha", function()
 		return ESP.menuBgAlpha
 	end, function(v)
@@ -6474,12 +7098,12 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		local inset = GuiService:GetGuiInset()
 		panel.Position = UDim2.new(0, 12 + inset.X, 0.5, -panel.AbsoluteSize.Y / 2)
 	end)
-	centerBtn.BackgroundColor3 = Color3.fromRGB(52, 66, 96)
+	centerBtn.BackgroundColor3 = COL.btn
 	local resetPosBtn = K.makeToggleButton(pageCustom, "Reset only position", function()
 		local inset = GuiService:GetGuiInset()
 		panel.Position = UDim2.new(0, 12 + inset.X, 0.5, -panel.AbsoluteSize.Y / 2)
 	end)
-	resetPosBtn.BackgroundColor3 = Color3.fromRGB(52, 66, 96)
+	resetPosBtn.BackgroundColor3 = COL.btn
 	local mobileQuickBtn = K.makeToggleButton(pageCustom, "Mobile quick buttons: on", function(btn)
 		ESP.mobileQuickButtonsOn = not ESP.mobileQuickButtonsOn
 		btn.Text = ESP.mobileQuickButtonsOn and "Mobile quick buttons: on" or "Mobile quick buttons: off"
@@ -6488,11 +7112,11 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		end
 	end)
 	mobileQuickBtn.Text = ESP.mobileQuickButtonsOn and "Mobile quick buttons: on" or "Mobile quick buttons: off"
-	mobileQuickBtn.BackgroundColor3 = Color3.fromRGB(52, 66, 96)
+	mobileQuickBtn.BackgroundColor3 = COL.btn
 
 	local resetBtn = K.makeToggleButton(pageCustom, "Reset all customization settings", function()
 		ESP.menuScale = 1
-		ESP.menuBgAlpha = 0
+		ESP.menuBgAlpha = 0.12
 		ESP.menuDragLock = false
 		ESP.menuRainbowBorderOn = false
 		ESP.menuWidth = 420
@@ -6508,7 +7132,7 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		ESP.menuHideTabScrollbar = false
 		ESP.menuAlwaysTop = false
 		ESP.mobileQuickButtonsOn = true
-		applyMenuVisuals()
+		applySimpleTheme(150, 228, 0)
 		applyRainbow()
 		local inset = GuiService:GetGuiInset()
 		panel.Position = UDim2.new(0, 12 + inset.X, 0.5, -panel.AbsoluteSize.Y / 2)
@@ -6526,8 +7150,9 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 			r.sync()
 		end
 	end)
-	resetBtn.BackgroundColor3 = Color3.fromRGB(70, 65, 45)
+	resetBtn.BackgroundColor3 = COL.btn
 
+	-- Refresh only; do not run applySimpleTheme here — it would flatten custom RGB to a gray ramp.
 	applyMenuVisuals()
 end
 
@@ -6566,13 +7191,13 @@ function K.buildMenu()
 	local shellGrad = Instance.new("UIGradient")
 	shellGrad.Rotation = 115
 	shellGrad.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(24, 28, 48)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(12, 14, 24)),
+		ColorSequenceKeypoint.new(0, COL.bg),
+		ColorSequenceKeypoint.new(1, COL.bgTop),
 	})
 	shellGrad.Parent = panel
 
 	local line = Instance.new("UIStroke", panel)
-	line.Color = Color3.fromRGB(70, 140, 255)
+	line.Color = COL.tabGlow
 	line.Thickness = ESP.menuBorderThickness
 	line.Transparency = ESP.menuBorderAlpha
 
@@ -6594,8 +7219,8 @@ function K.buildMenu()
 		openBtn.Text = "≡"
 		openBtn.Font = Enum.Font.GothamBlack
 		openBtn.TextSize = 18
-		openBtn.TextColor3 = Color3.fromRGB(235, 240, 255)
-		openBtn.BackgroundColor3 = Color3.fromRGB(35, 40, 65)
+		openBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+		openBtn.BackgroundColor3 = COL.tabIdle
 		openBtn.BackgroundTransparency = 0.1
 		openBtn.BorderSizePixel = 0
 		openBtn.Size = UDim2.fromOffset(38, 38)
@@ -6606,7 +7231,9 @@ function K.buildMenu()
 		local s = Instance.new("UIStroke", openBtn)
 		s.Thickness = 1
 		s.Transparency = 0.6
-		s.Color = Color3.fromRGB(120, 170, 255)
+		s.Color = COL.tabGlow
+		menuRefs.mobileOpenBtn = openBtn
+		menuRefs.mobileOpenStroke = s
 		openBtn.Activated:Connect(function()
 			panel.Visible = not panel.Visible
 		end)
@@ -6627,8 +7254,8 @@ function K.buildMenu()
 
 	local topShine = Instance.new("UIGradient")
 	topShine.Rotation = 90
-	topShine.Color = ColorSequence.new(Color3.fromRGB(45, 55, 90), Color3.fromRGB(22, 26, 42))
-	topShine.Transparency = NumberSequence.new(0.5, 1)
+	topShine.Color = ColorSequence.new(COL.bgTop, COL.tabIdle)
+	topShine.Transparency = NumberSequence.new(0.35, 1)
 	topShine.Parent = topBar
 
 	local title = Instance.new("TextLabel")
@@ -6638,8 +7265,8 @@ function K.buildMenu()
 	title.Font = Enum.Font.GothamBlack
 	title.TextSize = isTouch and 15 or 17
 	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.TextColor3 = Color3.new(1, 1, 1)
-	title.Text = "Qwz kit"
+	title.TextColor3 = Color3.fromRGB(235, 235, 235)
+	title.Text = "Qwz Kit"
 	title.ZIndex = 3
 	title.Active = false
 	title.Parent = topBar
@@ -6665,13 +7292,17 @@ function K.buildMenu()
 	closeBtn.Text = "−"
 	closeBtn.Font = Enum.Font.GothamBlack
 	closeBtn.TextSize = 22
-	closeBtn.TextColor3 = Color3.fromRGB(220, 230, 255)
-	closeBtn.BackgroundColor3 = Color3.fromRGB(45, 50, 75)
+	closeBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
+	closeBtn.BackgroundColor3 = COL.tabIdle
 	closeBtn.Size = UDim2.fromOffset(40, 36)
 	closeBtn.Position = UDim2.new(1, -48, 0, 6)
 	closeBtn.ZIndex = 4
 	closeBtn.Parent = topBar
 	K.roundCorners(closeBtn, 8)
+	local closeStroke = Instance.new("UIStroke", closeBtn)
+	closeStroke.Thickness = 1
+	closeStroke.Transparency = 0.5
+	closeStroke.Color = COL.tabGlow
 	closeBtn.Visible = ESP.menuShowClose
 	closeBtn.MouseButton1Click:Connect(function()
 		panel.Visible = false
@@ -6721,7 +7352,7 @@ function K.buildMenu()
 	local tabH = isTouch and 32 or 36
 	local tabY = dragHeight
 	local tabBar = Instance.new("Frame")
-	tabBar.BackgroundColor3 = Color3.fromRGB(18, 20, 32)
+	tabBar.BackgroundColor3 = COL.bgTop
 	tabBar.BackgroundTransparency = ESP.menuTabAlpha
 	tabBar.BorderSizePixel = 0
 	tabBar.ClipsDescendants = true
@@ -6739,7 +7370,7 @@ function K.buildMenu()
 	tabScroll.AutomaticCanvasSize = Enum.AutomaticSize.X
 	tabScroll.ScrollingDirection = Enum.ScrollingDirection.X
 	tabScroll.ScrollBarThickness = 3
-	tabScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 130, 220)
+	tabScroll.ScrollBarImageColor3 = COL.tabGlow
 	tabScroll.ScrollingEnabled = true
 	tabScroll.Parent = tabBar
 	if ESP.menuHideTabScrollbar then
@@ -6749,7 +7380,7 @@ function K.buildMenu()
 	local tabLayout = Instance.new("UIListLayout")
 	tabLayout.FillDirection = Enum.FillDirection.Horizontal
 	tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	tabLayout.Padding = UDim.new(0, 3)
+	tabLayout.Padding = UDim.new(0, 5)
 	tabLayout.Parent = tabScroll
 
 	local tabPad = Instance.new("UIPadding", tabScroll)
@@ -6788,22 +7419,32 @@ function K.buildMenu()
 		btn.AutoButtonColor = false
 		btn.Font = Enum.Font.GothamBold
 		btn.TextSize = ESP.menuTabTextSize
-		btn.Size = UDim2.new(0, 54, 0, 26)
+		btn.Size = UDim2.new(0, 64, 0, 28)
 		if on then
 			btn.BackgroundColor3 = COL.tabOn
-			btn.TextColor3 = Color3.new(1, 1, 1)
+			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
 		else
 			btn.BackgroundColor3 = COL.tabIdle
-			btn.TextColor3 = COL.muted
+			btn.TextColor3 = Color3.fromRGB(230, 230, 230)
 		end
-		K.roundCorners(btn, 8)
+		K.roundCorners(btn, 9)
+		local g = btn:FindFirstChildOfClass("UIGradient")
+		if not g then
+			g = Instance.new("UIGradient", btn)
+			g.Rotation = 90
+		end
+		if on then
+			g.Color = ColorSequence.new(COL.tabOn, COL.btn)
+		else
+			g.Color = ColorSequence.new(COL.tabIdle, COL.bgTop)
+		end
 		local s = btn:FindFirstChildOfClass("UIStroke")
 		if not s then
 			s = Instance.new("UIStroke", btn)
 			s.Thickness = 1
 		end
-		s.Color = on and COL.tabGlow or Color3.fromRGB(50, 55, 75)
-		s.Transparency = on and 0.5 or 0.7
+		s.Color = on and COL.accent or COL.tabGlow
+		s.Transparency = on and 0.35 or 0.62
 	end
 
 	local tabAntiBtn = Instance.new("TextButton")
@@ -6849,6 +7490,9 @@ function K.buildMenu()
 	tabCustomBtn.Parent = tabScroll
 
 	menuRefs.topBar = topBar
+	menuRefs.topBarGrad = topShine
+	menuRefs.shellGrad = shellGrad
+	menuRefs.title = title
 	menuRefs.subtitle = subtitle
 	menuRefs.closeBtn = closeBtn
 	menuRefs.tabBar = tabBar
@@ -7129,6 +7773,9 @@ me.CharacterAdded:Connect(function(char)
 	K.stopCombatStrafe()
 	combatBoostOn = false
 	K.stopCombatBoost()
+	ESP.autoForceTpOn = false
+	K.stopAutoForceTp()
+	ESP.autoForceTpBurstRunning = false
 	ESP.opFaceLockOn = false
 	ESP.opAimLineOn = false
 	ESP.opBhopOn = false
