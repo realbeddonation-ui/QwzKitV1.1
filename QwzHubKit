@@ -198,6 +198,12 @@ local ESP = {
 	opFaceLockKey = Enum.KeyCode.G,
 	opFaceKeyListen = false,
 	opFaceKeybindBtn = nil,
+	opCameraLockOn = false,
+	opCameraLockSavedType = nil,
+	opCameraLockSavedSubject = nil,
+	opCameraLockBack = 10,
+	opCameraLockUp = 2.5,
+	opCameraLockBtn = nil,
 	opBhopOn = false,
 	opSpinOn = false,
 	opSpinSpeed = 260,
@@ -224,7 +230,7 @@ local ESP = {
 	menuDragLock = false,
 	menuRainbowBorderOn = false,
 	menuRainbowConn = nil,
-	menuWidth = 600,
+	menuWidth = 620,
 	menuHeight = 360,
 	menuCorner = 12,
 	menuTopAlpha = 0.15,
@@ -239,11 +245,28 @@ local ESP = {
 	mobileQuickButtonsOn = true,
 	flyTouchUp = false,
 	flyTouchDown = false,
+	flyTouchMoveHeld = false,
 	-- Packed here to save main-chunk locals (Luau register limit ~200)
 	dupeScanTick = 0,
 	tpCamDist = 25,
 	tpRayMaxDist = 200,
 	labels = { move = {}, world = {}, client = {} },
+	-- Target tab (chase / TP; separate from ESP targetUserId)
+	targetKitUserId = nil,
+	targetKitScroll = nil,
+	targetKitStatusLbl = nil,
+	targetKitMoveBtn = nil,
+	targetKitSearch = "",
+	targetKitAvoid = true,
+	targetKitArcMode = false,
+	targetKitArcClear = 24,
+	targetKitArcMaxRise = 95,
+	targetKitArcDescDist = 22,
+	targetKitArcPhase = 1,
+	targetKitArcStartY = nil,
+	targetKitSpeed = 58,
+	targetKitChasing = false,
+	targetKitSavedFlyOn = false,
 }
 
 -- ========= Macros =========
@@ -849,6 +872,7 @@ function K.stopFly()
 	end
 	ESP.flyTouchUp = false
 	ESP.flyTouchDown = false
+	ESP.flyTouchMoveHeld = false
 	local h = K.getHumanoid()
 	if h then
 		h.PlatformStand = false
@@ -877,6 +901,9 @@ function K.startFly()
 		-- Always PlatformStand while flying: on touch, false let Humanoid gravity/floor logic fight velocity and you sink.
 		hum.PlatformStand = true
 		hum.AutoRotate = false
+		pcall(function()
+			hum:ChangeState(Enum.HumanoidStateType.Flying)
+		end)
 		if flyHoldY == nil then
 			flyHoldY = root.Position.Y
 		end
@@ -890,10 +917,15 @@ function K.startFly()
 		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
 		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.C) then dir -= Vector3.yAxis end
 		if isTouch then
-			-- Mobile joystick → MoveDirection (ignore Y; deadzone avoids phantom drift / slow sink).
 			local md = hum.MoveDirection
 			local flat = Vector3.new(md.X, 0, md.Z)
-			if flat.Magnitude > 0.14 then
+			local fm = flat.Magnitude
+			if fm > 0.11 then
+				ESP.flyTouchMoveHeld = true
+			elseif fm < 0.042 then
+				ESP.flyTouchMoveHeld = false
+			end
+			if ESP.flyTouchMoveHeld and fm > 0.035 then
 				dir += flat.Unit
 			end
 			if ESP.flyTouchUp then
@@ -902,13 +934,21 @@ function K.startFly()
 			if ESP.flyTouchDown then
 				dir -= Vector3.yAxis
 			end
+		else
+			ESP.flyTouchMoveHeld = false
 		end
 		local anyKeyPressed = dir.Magnitude > 0.01
 		if anyKeyPressed then
 			flyHoldY = root.Position.Y
 			local desiredVel = dir.Unit * flySpeed
-			root.AssemblyLinearVelocity = root.AssemblyLinearVelocity:Lerp(desiredVel, 0.22)
-			if flyAntiStuckOn then
+			if isTouch then
+				local dh = Vector3.new(desiredVel.X, 0, desiredVel.Z)
+				if dh.Magnitude > 0.05 and math.abs(desiredVel.Y) < flySpeed * 0.2 then
+					desiredVel = dh.Unit * flySpeed
+				end
+			end
+			root.AssemblyLinearVelocity = root.AssemblyLinearVelocity:Lerp(desiredVel, isTouch and 0.32 or 0.22)
+			if flyAntiStuckOn and not isTouch then
 				local now = os.clock()
 				local flatPos = Vector3.new(root.Position.X, 0, root.Position.Z)
 				local movedFlat = false
@@ -941,8 +981,13 @@ function K.startFly()
 		else
 			stuckSince = nil
 			lastFlatPos = Vector3.new(root.Position.X, 0, root.Position.Z)
-			root.CFrame = CFrame.new(Vector3.new(root.Position.X, flyHoldY, root.Position.Z), Vector3.new(root.Position.X + look.X, flyHoldY, root.Position.Z + look.Z))
-			root.AssemblyLinearVelocity = Vector3.zero
+			if isTouch then
+				flyHoldY = root.Position.Y
+				root.AssemblyLinearVelocity = Vector3.zero
+			else
+				root.CFrame = CFrame.new(Vector3.new(root.Position.X, flyHoldY, root.Position.Z), Vector3.new(root.Position.X + look.X, flyHoldY, root.Position.Z + look.Z))
+				root.AssemblyLinearVelocity = Vector3.zero
+			end
 		end
 		root.AssemblyAngularVelocity = Vector3.zero
 		root.CFrame = CFrame.lookAt(root.Position, root.Position + look)
@@ -2201,6 +2246,9 @@ function K.getOpCombatTargetPlayer()
 	if ESP.targetUserId then
 		return K.playerByUserId(ESP.targetUserId)
 	end
+	if ESP.targetKitUserId then
+		return K.playerByUserId(ESP.targetKitUserId)
+	end
 	return nil
 end
 
@@ -2287,6 +2335,58 @@ function K.opCombatHeartbeat()
 		end
 	elseif ESP.opAimLineFrame then
 		ESP.opAimLineFrame.Visible = false
+	end
+end
+
+function K.stopCameraLock()
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_CamLock")
+	end)
+	local cam = Workspace.CurrentCamera
+	if cam and ESP.opCameraLockSavedType ~= nil then
+		pcall(function()
+			cam.CameraType = ESP.opCameraLockSavedType
+			cam.CameraSubject = ESP.opCameraLockSavedSubject
+		end)
+	end
+	ESP.opCameraLockSavedType = nil
+	ESP.opCameraLockSavedSubject = nil
+end
+
+function K.cameraLockStep()
+	if not ESP.opCameraLockOn then
+		return
+	end
+	local plr = K.getOpCombatTargetPlayer()
+	local head = plr and K.getHead(plr)
+	local myRoot = K.getRoot()
+	local cam = Workspace.CurrentCamera
+	if not head or not myRoot or not cam then
+		return
+	end
+	local back = ESP.opCameraLockBack or 10
+	local up = ESP.opCameraLockUp or 2.5
+	local cf = myRoot.CFrame
+	local camPos = cf.Position - cf.LookVector * back + Vector3.new(0, up, 0)
+	cam.CFrame = CFrame.lookAt(camPos, head.Position)
+end
+
+function K.setCameraLockRunning()
+	if ESP.opCameraLockOn then
+		local cam = Workspace.CurrentCamera
+		if cam and ESP.opCameraLockSavedType == nil then
+			ESP.opCameraLockSavedType = cam.CameraType
+			ESP.opCameraLockSavedSubject = cam.CameraSubject
+		end
+		if cam then
+			cam.CameraType = Enum.CameraType.Scriptable
+		end
+		pcall(function()
+			RunService:UnbindFromRenderStep(MENU_NAME .. "_CamLock")
+		end)
+		RunService:BindToRenderStep(MENU_NAME .. "_CamLock", Enum.RenderPriority.Camera.Value, K.cameraLockStep)
+	else
+		K.stopCameraLock()
 	end
 end
 
@@ -2457,6 +2557,350 @@ function K.getFilteredPlayersForEspList()
 		return a.Name < b.Name
 	end)
 	return list
+end
+
+function K.targetKitFilteredPlayers()
+	local list = {}
+	local q = string.lower(ESP.targetKitSearch or "")
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= me then
+			local n = string.lower(plr.Name or "")
+			local d = string.lower(plr.DisplayName or "")
+			if q == "" or string.find(n, q, 1, true) or string.find(d, q, 1, true) then
+				table.insert(list, plr)
+			end
+		end
+	end
+	table.sort(list, function(a, b)
+		return a.Name < b.Name
+	end)
+	return list
+end
+
+function K.targetKitSteerDir(from, goalPos, char, useAvoid)
+	local delta = goalPos - from
+	if delta.Magnitude < 0.2 then
+		return Vector3.zero
+	end
+	local want = delta.Unit
+	if not useAvoid or not char then
+		return want
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Blacklist
+	params.FilterDescendantsInstances = { char }
+	params.IgnoreWater = true
+	local origin = from + Vector3.new(0, 1.25, 0)
+	local probe = 8
+	local function rayClear(dir)
+		local u = dir.Unit
+		local hit = Workspace:Raycast(origin, u * probe, params)
+		return hit == nil
+	end
+	if rayClear(want) then
+		return want
+	end
+	local up = Vector3.yAxis
+	local right = want:Cross(up)
+	if right.Magnitude < 0.06 then
+		right = want:Cross(Vector3.new(1, 0, 0))
+	end
+	right = right.Unit
+	local best = want
+	local bestDot = -2
+	local function tryDir(d)
+		if d.Magnitude < 0.05 then
+			return
+		end
+		d = d.Unit
+		if rayClear(d) then
+			local dot = d:Dot(want)
+			if dot > bestDot then
+				bestDot = dot
+				best = d
+			end
+		end
+	end
+	for _, deg in ipairs({ 22, -22, 45, -45, 68, -68, 90, -90, 115, -115 }) do
+		tryDir(CFrame.fromAxisAngle(up, math.rad(deg)):VectorToWorldSpace(want))
+	end
+	for _, deg in ipairs({ 18, -18, 35, -35, 55, -55 }) do
+		tryDir(CFrame.fromAxisAngle(right, math.rad(deg)):VectorToWorldSpace(want))
+	end
+	tryDir(up)
+	tryDir(-up)
+	tryDir((want + up * 0.65).Unit)
+	tryDir((want - up * 0.65).Unit)
+	tryDir((want + right * 0.55).Unit)
+	tryDir((want - right * 0.55).Unit)
+	return best
+end
+
+function K.targetKitHorizontalBlocked(from, goalPos, char, yLift, probeDist)
+	local flat = Vector3.new(goalPos.X - from.X, 0, goalPos.Z - from.Z)
+	local m = flat.Magnitude
+	if m < 0.08 then
+		return false
+	end
+	local dir = flat.Unit
+	local dist = math.clamp(probeDist or m, 5, 85)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Blacklist
+	params.FilterDescendantsInstances = { char }
+	params.IgnoreWater = true
+	local origin = Vector3.new(from.X, from.Y + (yLift or 1.25), from.Z)
+	return Workspace:Raycast(origin, dir * dist, params) ~= nil
+end
+
+function K.targetKitStopNav()
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_TargetKitNav")
+	end)
+	ESP.targetKitChasing = false
+	ESP.targetKitArcPhase = 1
+	ESP.targetKitArcStartY = nil
+	if ESP.targetKitMoveBtn then
+		ESP.targetKitMoveBtn.Text = "Fly toward target: off"
+	end
+	if ESP.targetKitSavedFlyOn then
+		flyOn = true
+		K.setFlyRunning()
+		ESP.targetKitSavedFlyOn = false
+	else
+		local h = K.getHumanoid()
+		local r = K.getRoot()
+		if h then
+			h.PlatformStand = false
+			h.AutoRotate = true
+		end
+		if r then
+			r.AssemblyLinearVelocity = Vector3.zero
+			r.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+end
+
+function K.targetKitStartNav()
+	if not ESP.targetKitUserId then
+		return false
+	end
+	local tpl = K.playerByUserId(ESP.targetKitUserId)
+	local troot = tpl and tpl.Character and tpl.Character:FindFirstChild("HumanoidRootPart")
+	if not troot then
+		return false
+	end
+	local wasChasing = ESP.targetKitChasing
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_TargetKitNav")
+	end)
+	ESP.targetKitChasing = false
+	if not wasChasing then
+		ESP.targetKitSavedFlyOn = flyOn
+		if flyOn then
+			flyOn = false
+			K.stopFly()
+		end
+	end
+	ESP.targetKitChasing = true
+	if not wasChasing then
+		local r0 = K.getRoot()
+		ESP.targetKitArcStartY = r0 and r0.Position.Y or 0
+		ESP.targetKitArcPhase = 1
+	end
+	RunService:BindToRenderStep(MENU_NAME .. "_TargetKitNav", 2147483643, function()
+		if not ESP.targetKitChasing then
+			return
+		end
+		local char = me.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		if not hum or not root then
+			return
+		end
+		hum.PlatformStand = true
+		hum.AutoRotate = false
+		local tpl2 = K.playerByUserId(ESP.targetKitUserId)
+		local tr = tpl2 and tpl2.Character and tpl2.Character:FindFirstChild("HumanoidRootPart")
+		if not tr then
+			K.targetKitStopNav()
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "Target left — stopped."
+			end
+			return
+		end
+		local goal = tr.Position + Vector3.new(0, 1.5, 0)
+		local from = root.Position
+		local dist = (goal - from).Magnitude
+		if dist < 5 then
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "Within range of " .. tpl2.Name .. " (~" .. string.format("%.0f", dist) .. " studs)."
+			end
+			return
+		end
+		local steer
+		local phaseTag = ""
+		if ESP.targetKitArcMode then
+			local clear = ESP.targetKitArcClear
+			local maxRise = ESP.targetKitArcMaxRise
+			local descD = ESP.targetKitArcDescDist
+			local flatDelta = Vector3.new(goal.X - from.X, 0, goal.Z - from.Z)
+			local flatDist = flatDelta.Magnitude
+			local baseY = ESP.targetKitArcStartY or from.Y
+			local cruiseY = math.max(goal.Y + clear, baseY + math.min(clear, 14))
+			local horizProbe = math.min(math.max(flatDist, 10), 72)
+			if ESP.targetKitArcPhase >= 3 then
+				phaseTag = "drop→chase"
+				steer = K.targetKitSteerDir(from, goal, char, ESP.targetKitAvoid)
+			elseif ESP.targetKitArcPhase == 2 then
+				phaseTag = "cruise"
+				local holdY = math.max(cruiseY - 1.5, goal.Y + clear * 0.88)
+				holdY = math.min(holdY, baseY + maxRise + clear)
+				local aerialGoal = Vector3.new(goal.X, holdY, goal.Z)
+				local toG = aerialGoal - from
+				if toG.Magnitude < 0.15 then
+					steer = Vector3.yAxis
+				else
+					steer = toG.Unit
+				end
+				if ESP.targetKitAvoid then
+					local alt = K.targetKitSteerDir(from, aerialGoal, char, true)
+					if alt.Magnitude > 0.02 and alt:Dot(steer) > 0.2 then
+						steer = (steer * 0.55 + alt * 0.45).Unit
+					end
+				end
+				local horizOk = not K.targetKitHorizontalBlocked(from, goal, char, 1.1, horizProbe + 6)
+				if flatDist < descD and horizOk then
+					ESP.targetKitArcPhase = 3
+				elseif from.Y <= goal.Y + clear * 0.35 and flatDist < descD * 1.35 and horizOk then
+					ESP.targetKitArcPhase = 3
+				end
+			else
+				phaseTag = "climb"
+				local flatDir = flatDist > 0.45 and flatDelta.Unit or Vector3.zero
+				steer = (Vector3.yAxis * 0.74 + flatDir * 0.26)
+				if steer.Magnitude < 0.06 then
+					steer = Vector3.yAxis
+				else
+					steer = steer.Unit
+				end
+				local blocked = K.targetKitHorizontalBlocked(from, goal, char, 1.5, horizProbe)
+				local highEnough = from.Y >= goal.Y + clear - 1.2
+				local ceiling = baseY + maxRise
+				if (highEnough and not blocked) or from.Y >= ceiling then
+					ESP.targetKitArcPhase = 2
+				end
+			end
+		else
+			steer = K.targetKitSteerDir(from, goal, char, ESP.targetKitAvoid)
+		end
+		if steer.Magnitude < 0.02 then
+			steer = (goal - from).Unit
+		end
+		root.AssemblyLinearVelocity = steer * ESP.targetKitSpeed
+		root.AssemblyAngularVelocity = Vector3.zero
+		if ESP.targetKitStatusLbl then
+			if ESP.targetKitArcMode then
+				ESP.targetKitStatusLbl.Text = string.format(
+					"%s · %s · %.0f studs · arc on · avoid %s · spd %.0f",
+					phaseTag,
+					tpl2.Name,
+					dist,
+					ESP.targetKitAvoid and "on" or "off",
+					ESP.targetKitSpeed
+				)
+			else
+				ESP.targetKitStatusLbl.Text = string.format(
+					"Chasing %s · %.0f studs · avoid %s · speed %.0f",
+					tpl2.Name,
+					dist,
+					ESP.targetKitAvoid and "on" or "off",
+					ESP.targetKitSpeed
+				)
+			end
+		end
+	end)
+	return true
+end
+
+function K.targetKitTeleportToPick()
+	if not ESP.targetKitUserId then
+		return false
+	end
+	local tpl = K.playerByUserId(ESP.targetKitUserId)
+	local troot = tpl and tpl.Character and tpl.Character:FindFirstChild("HumanoidRootPart")
+	local char = me.Character
+	if not troot or not char then
+		return false
+	end
+	local pivot = char:GetPivot()
+	local dir = troot.Position - pivot.Position
+	local flat = Vector3.new(dir.X, 0, dir.Z)
+	local off
+	if flat.Magnitude > 0.35 then
+		off = flat.Unit * 5.5
+	else
+		off = troot.CFrame.RightVector * 5.5
+	end
+	local goalPos = troot.Position + Vector3.new(0, 2.2, 0) + off
+	local look = (troot.Position + Vector3.new(0, 1.2, 0)) - goalPos
+	if look.Magnitude < 0.15 then
+		look = troot.CFrame.LookVector
+	else
+		look = look.Unit
+	end
+	pcall(function()
+		char:PivotTo(CFrame.lookAt(goalPos, goalPos + look))
+	end)
+	local r = K.getRoot()
+	if r then
+		r.AssemblyLinearVelocity = Vector3.zero
+		r.AssemblyAngularVelocity = Vector3.zero
+	end
+	if ESP.targetKitStatusLbl then
+		ESP.targetKitStatusLbl.Text = "Teleported near " .. tpl.Name .. "."
+	end
+	return true
+end
+
+function K.refreshTargetKitList()
+	if not ESP.targetKitScroll then
+		return
+	end
+	for _, ch in ESP.targetKitScroll:GetChildren() do
+		if ch:IsA("TextButton") then
+			ch:Destroy()
+		end
+	end
+	for _, pick in ipairs(K.targetKitFilteredPlayers()) do
+		local row = Instance.new("TextButton")
+		row.Name = "TargetKitRow"
+		row.AutoButtonColor = true
+		row.Active = true
+		row.Selectable = true
+		row.ZIndex = 3
+		row.Size = UDim2.new(1, -6, 0, 28)
+		row.BackgroundColor3 = (ESP.targetKitUserId == pick.UserId) and Color3.fromRGB(42, 62, 52) or COL.listBg
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.Font = Enum.Font.Gotham
+		row.TextSize = 11
+		row.TextColor3 = K.getReadableTextColor(row.BackgroundColor3)
+		row.BorderSizePixel = 0
+		row.Text = "  " .. pick.Name .. "  (" .. (pick.DisplayName or pick.Name) .. ")"
+		row.Parent = ESP.targetKitScroll
+		K.roundCorners(row, 6)
+		row.MouseButton1Click:Connect(function()
+			if K.isTouchScrolling(ESP.targetKitScroll) then
+				return
+			end
+			ESP.targetKitUserId = pick.UserId
+			K.refreshTargetKitList()
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "Selected: " .. pick.Name
+			end
+		end)
+	end
 end
 
 function K.roundCorners(frame, pixels)
@@ -2910,7 +3354,12 @@ function K.onPlayerRemoving(player)
 	if ESP.targetUserId and player.UserId == ESP.targetUserId then
 		K.setEspTargetPlayer(nil)
 	end
+	if ESP.targetKitUserId and player.UserId == ESP.targetKitUserId then
+		ESP.targetKitUserId = nil
+		K.targetKitStopNav()
+	end
 	task.defer(K.refreshEspTargetList)
+	task.defer(K.refreshTargetKitList)
 end
 
 -- ========= Label updates =========
@@ -3758,6 +4207,8 @@ function CC.startFreecam()
 		CC.stopFreecam()
 		return
 	end
+	ESP.opCameraLockOn = false
+	K.stopCameraLock()
 	CC.stopOrbit()
 	local cam = Workspace.CurrentCamera
 	if not cam then
@@ -3861,6 +4312,8 @@ function CC.startOrbit()
 		CC.stopOrbit()
 		return
 	end
+	ESP.opCameraLockOn = false
+	K.stopCameraLock()
 	CC.stopFreecam()
 	local cam = Workspace.CurrentCamera
 	if not cam then
@@ -4658,7 +5111,7 @@ function K.menuFillMoveTab(pageMove)
 	flyLbl.TextWrapped = true
 	flyLbl.TextColor3 = COL.muted
 	flyLbl.Text =
-		"Camera-relative: W/S along look, A/D strafe, Space/Ctrl world up/down. Touch: joystick moves on the ground plane; UP/DN on quick bar for vertical. Hotkey toggles fly (see below)."
+		"Camera-relative: W/S along look, A/D strafe, Space/Ctrl world up/down. Touch: stick is horizontal-only + movement latch (reduces dip); UP/DN on quick bar for vertical. Hotkey toggles fly (see below)."
 	flyLbl.Size = UDim2.new(1, 0, 0, 44)
 	flyLbl.Parent = pageMove
 	ESP.labels.move.fly = K.makeToggleButton(pageMove, "Flying: off", function()
@@ -5710,6 +6163,225 @@ function K.menuFillClientTab(pageClient, screen)
 	end)
 end
 
+function K.menuFillTargetTab(pageTarget)
+	K.addSectionLabel(pageTarget, "PICK TARGET")
+	local tgtNote = Instance.new("TextLabel")
+	tgtNote.BackgroundTransparency = 1
+	tgtNote.Font = Enum.Font.Gotham
+	tgtNote.TextSize = 11
+	tgtNote.TextXAlignment = Enum.TextXAlignment.Left
+	tgtNote.TextWrapped = true
+	tgtNote.TextColor3 = COL.muted
+	tgtNote.Text =
+		"Choose a player below. Fly-toward uses local velocity (pauses Fly while active, then restores it). Ray steer dodges walls. Optional arc mode: climb, cruise above the target, then drop in when the horizontal path is clear."
+	tgtNote.Size = UDim2.new(1, 0, 0, 52)
+	tgtNote.Parent = pageTarget
+
+	ESP.targetKitStatusLbl = Instance.new("TextLabel")
+	ESP.targetKitStatusLbl.BackgroundTransparency = 1
+	ESP.targetKitStatusLbl.Font = Enum.Font.Gotham
+	ESP.targetKitStatusLbl.TextSize = 12
+	ESP.targetKitStatusLbl.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.targetKitStatusLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.targetKitStatusLbl.Size = UDim2.new(1, 0, 0, 36)
+	ESP.targetKitStatusLbl.TextWrapped = true
+	ESP.targetKitStatusLbl.Text = "Selected: (click a player in the list)"
+	ESP.targetKitStatusLbl.Parent = pageTarget
+
+	local searchBox = Instance.new("TextBox")
+	searchBox.Size = UDim2.new(1, 0, 0, 32)
+	searchBox.BackgroundColor3 = COL.inputBg
+	searchBox.TextColor3 = Color3.new(1, 1, 1)
+	searchBox.Font = Enum.Font.Gotham
+	searchBox.TextSize = 13
+	searchBox.Text = ESP.targetKitSearch or ""
+	searchBox.PlaceholderText = "Search player (name / display)"
+	searchBox.ClearTextOnFocus = false
+	searchBox.Parent = pageTarget
+	K.roundCorners(searchBox, 6)
+	searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+		ESP.targetKitSearch = searchBox.Text
+		K.refreshTargetKitList()
+	end)
+
+	K.makeToggleButton(pageTarget, "Refresh player list", function()
+		K.refreshTargetKitList()
+	end)
+
+	ESP.targetKitScroll = Instance.new("ScrollingFrame")
+	ESP.targetKitScroll.BackgroundColor3 = COL.listBg
+	ESP.targetKitScroll.BorderSizePixel = 0
+	ESP.targetKitScroll.Size = UDim2.new(1, 0, 0, 140)
+	ESP.targetKitScroll.ScrollBarThickness = 4
+	ESP.targetKitScroll.ScrollBarImageColor3 = COL.accentSoft
+	ESP.targetKitScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	ESP.targetKitScroll.CanvasSize = UDim2.new()
+	ESP.targetKitScroll.Active = true
+	ESP.targetKitScroll.Selectable = true
+	ESP.targetKitScroll.ZIndex = 2
+	ESP.targetKitScroll.Parent = pageTarget
+	K.roundCorners(ESP.targetKitScroll, 8)
+	K.enableTouchScroll(ESP.targetKitScroll)
+	local kitListLay = Instance.new("UIListLayout", ESP.targetKitScroll)
+	kitListLay.Padding = UDim.new(0, 4)
+	kitListLay.SortOrder = Enum.SortOrder.LayoutOrder
+
+	K.addSectionLabel(pageTarget, "ACTIONS")
+	local avoidBtn = K.makeToggleButton(pageTarget, "Avoid obstacles (ray steer): on", function(btn)
+		ESP.targetKitAvoid = not ESP.targetKitAvoid
+		btn.Text = ESP.targetKitAvoid and "Avoid obstacles (ray steer): on" or "Avoid obstacles (ray steer): off"
+	end)
+	avoidBtn.Text = ESP.targetKitAvoid and "Avoid obstacles (ray steer): on" or "Avoid obstacles (ray steer): off"
+
+	local arcBtn = K.makeToggleButton(pageTarget, "Arc over obstacles (up / over / down): off", function(btn)
+		ESP.targetKitArcMode = not ESP.targetKitArcMode
+		btn.Text = ESP.targetKitArcMode and "Arc over obstacles (up / over / down): on"
+			or "Arc over obstacles (up / over / down): off"
+	end)
+	arcBtn.Text = ESP.targetKitArcMode and "Arc over obstacles (up / over / down): on"
+		or "Arc over obstacles (up / over / down): off"
+
+	local arcClrRow = Instance.new("Frame")
+	arcClrRow.BackgroundTransparency = 1
+	arcClrRow.Size = UDim2.new(1, 0, 0, 34)
+	arcClrRow.Parent = pageTarget
+	local arcClrLay = Instance.new("UIListLayout")
+	arcClrLay.FillDirection = Enum.FillDirection.Horizontal
+	arcClrLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	arcClrLay.Padding = UDim.new(0, 8)
+	arcClrLay.Parent = arcClrRow
+	local arcClrLbl = Instance.new("TextLabel")
+	arcClrLbl.BackgroundTransparency = 1
+	arcClrLbl.Size = UDim2.new(1, -100, 1, 0)
+	arcClrLbl.Font = Enum.Font.Gotham
+	arcClrLbl.TextSize = 11
+	arcClrLbl.TextXAlignment = Enum.TextXAlignment.Left
+	arcClrLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+	arcClrLbl.Text = "Arc height above target (studs)"
+	arcClrLbl.Parent = arcClrRow
+	local arcClrDown = Instance.new("TextButton")
+	arcClrDown.Text = "−"
+	arcClrDown.Size = UDim2.fromOffset(40, 32)
+	arcClrDown.Font = Enum.Font.GothamBold
+	arcClrDown.TextSize = 18
+	arcClrDown.TextColor3 = Color3.new(1, 1, 1)
+	arcClrDown.BackgroundColor3 = COL.btn
+	arcClrDown.BorderSizePixel = 0
+	arcClrDown.Parent = arcClrRow
+	arcClrDown:SetAttribute("KitStepBtn", true)
+	K.roundCorners(arcClrDown, 8)
+	arcClrDown.MouseButton1Click:Connect(function()
+		ESP.targetKitArcClear = math.clamp(ESP.targetKitArcClear - 3, 10, 72)
+		arcClrLbl.Text = "Arc height above target: " .. tostring(math.floor(ESP.targetKitArcClear + 0.5))
+	end)
+	local arcClrUp = Instance.new("TextButton")
+	arcClrUp.Text = "+"
+	arcClrUp.Size = UDim2.fromOffset(40, 32)
+	arcClrUp.Font = Enum.Font.GothamBold
+	arcClrUp.TextSize = 18
+	arcClrUp.TextColor3 = Color3.new(1, 1, 1)
+	arcClrUp.BackgroundColor3 = COL.btn
+	arcClrUp.BorderSizePixel = 0
+	arcClrUp.Parent = arcClrRow
+	arcClrUp:SetAttribute("KitStepBtn", true)
+	K.roundCorners(arcClrUp, 8)
+	arcClrUp.MouseButton1Click:Connect(function()
+		ESP.targetKitArcClear = math.clamp(ESP.targetKitArcClear + 3, 10, 72)
+		arcClrLbl.Text = "Arc height above target: " .. tostring(math.floor(ESP.targetKitArcClear + 0.5))
+	end)
+	arcClrLbl.Text = "Arc height above target: " .. tostring(math.floor(ESP.targetKitArcClear + 0.5))
+
+	local spdRow = Instance.new("Frame")
+	spdRow.BackgroundTransparency = 1
+	spdRow.Size = UDim2.new(1, 0, 0, 34)
+	spdRow.Parent = pageTarget
+	local spdLay = Instance.new("UIListLayout")
+	spdLay.FillDirection = Enum.FillDirection.Horizontal
+	spdLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	spdLay.Padding = UDim.new(0, 8)
+	spdLay.Parent = spdRow
+	local spdLbl = Instance.new("TextLabel")
+	spdLbl.BackgroundTransparency = 1
+	spdLbl.Size = UDim2.new(1, -100, 1, 0)
+	spdLbl.Font = Enum.Font.Gotham
+	spdLbl.TextSize = 11
+	spdLbl.TextXAlignment = Enum.TextXAlignment.Left
+	spdLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+	spdLbl.Text = "Chase speed (studs/s)"
+	spdLbl.Parent = spdRow
+	local spdDown = Instance.new("TextButton")
+	spdDown.Text = "−"
+	spdDown.Size = UDim2.fromOffset(40, 32)
+	spdDown.Font = Enum.Font.GothamBold
+	spdDown.TextSize = 18
+	spdDown.TextColor3 = Color3.new(1, 1, 1)
+	spdDown.BackgroundColor3 = COL.btn
+	spdDown.BorderSizePixel = 0
+	spdDown.Parent = spdRow
+	spdDown:SetAttribute("KitStepBtn", true)
+	K.roundCorners(spdDown, 8)
+	spdDown.MouseButton1Click:Connect(function()
+		ESP.targetKitSpeed = math.clamp(ESP.targetKitSpeed - 6, 12, 200)
+		spdLbl.Text = "Chase speed: " .. tostring(math.floor(ESP.targetKitSpeed + 0.5))
+	end)
+	local spdUp = Instance.new("TextButton")
+	spdUp.Text = "+"
+	spdUp.Size = UDim2.fromOffset(40, 32)
+	spdUp.Font = Enum.Font.GothamBold
+	spdUp.TextSize = 18
+	spdUp.TextColor3 = Color3.new(1, 1, 1)
+	spdUp.BackgroundColor3 = COL.btn
+	spdUp.BorderSizePixel = 0
+	spdUp.Parent = spdRow
+	spdUp:SetAttribute("KitStepBtn", true)
+	K.roundCorners(spdUp, 8)
+	spdUp.MouseButton1Click:Connect(function()
+		ESP.targetKitSpeed = math.clamp(ESP.targetKitSpeed + 6, 12, 200)
+		spdLbl.Text = "Chase speed: " .. tostring(math.floor(ESP.targetKitSpeed + 0.5))
+	end)
+	spdLbl.Text = "Chase speed: " .. tostring(math.floor(ESP.targetKitSpeed + 0.5))
+
+	ESP.targetKitMoveBtn = K.makeToggleButton(pageTarget, "Fly toward target: off", function(btn)
+		if ESP.targetKitChasing then
+			K.targetKitStopNav()
+		else
+			if K.targetKitStartNav() then
+				btn.Text = "Fly toward target: on (tap to stop)"
+			else
+				btn.Text = "Fly toward target: off (pick target first)"
+				if ESP.targetKitStatusLbl then
+					ESP.targetKitStatusLbl.Text = "Pick a player in the list first."
+				end
+			end
+		end
+	end)
+
+	K.makeToggleButton(pageTarget, "Teleport next to target", function()
+		if not ESP.targetKitUserId then
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "Pick a target first."
+			end
+			return
+		end
+		if not K.targetKitTeleportToPick() then
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "Could not teleport (no character / HRP)."
+			end
+		end
+	end)
+
+	K.makeToggleButton(pageTarget, "Clear target selection", function()
+		K.targetKitStopNav()
+		ESP.targetKitUserId = nil
+		K.refreshTargetKitList()
+		if ESP.targetKitStatusLbl then
+			ESP.targetKitStatusLbl.Text = "Selected: (none)"
+		end
+	end)
+
+	task.defer(K.refreshTargetKitList)
+end
+
 function K.menuFillCombatTabHitboxAnim(pageCombat)
 	K.addSectionLabel(pageCombat, "HITBOX OBSERVER")
 	local hbNote = Instance.new("TextLabel")
@@ -6615,6 +7287,22 @@ function K.menuFillCombatTab(pageCombat)
 		btn.Text = ESP.opFaceLockOn and "Face-lock to target: on" or "Face-lock to target: off"
 		K.setOpCombatRunning()
 	end)
+	ESP.opCameraLockBtn = K.makeToggleButton(pageCombat, "Camera lock to target: off", function(btn)
+		ESP.opCameraLockOn = not ESP.opCameraLockOn
+		btn.Text = ESP.opCameraLockOn and "Camera lock to target: on" or "Camera lock to target: off"
+		K.setCameraLockRunning()
+	end)
+	local camLockNote = Instance.new("TextLabel")
+	camLockNote.BackgroundTransparency = 1
+	camLockNote.Font = Enum.Font.Gotham
+	camLockNote.TextSize = 10
+	camLockNote.TextXAlignment = Enum.TextXAlignment.Left
+	camLockNote.TextWrapped = true
+	camLockNote.TextColor3 = COL.muted
+	camLockNote.Text =
+		"Camera lock: Scriptable cam behind you, looks at the picked target (priority: loop TP → strafe → ESP target → Target tab). Turn off before freecam/orbit."
+	camLockNote.Size = UDim2.new(1, 0, 0, 36)
+	camLockNote.Parent = pageCombat
 	ESP.opFaceKeybindBtn = K.makeToggleButton(pageCombat, "Face-lock key: " .. ESP.opFaceLockKey.Name .. " (click to change)", function()
 		ESP.opFaceKeyListen = true
 		K.refreshOpCombatUi()
@@ -7174,7 +7862,7 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		ESP.menuBgAlpha = 0
 		ESP.menuDragLock = false
 		ESP.menuRainbowBorderOn = false
-		ESP.menuWidth = 760
+		ESP.menuWidth = 620
 		ESP.menuHeight = 360
 		ESP.menuCorner = 12
 		ESP.menuTopAlpha = 0
@@ -7532,6 +8220,7 @@ function K.buildMenu()
 	local pageMove = K.makeMenuScrollPage("Movement", contentHolder)
 	local pageWorld = K.makeMenuScrollPage("World", contentHolder)
 	local pageClient = K.makeMenuScrollPage("Client", contentHolder)
+	local pageTarget = K.makeMenuScrollPage("Target", contentHolder)
 	local pageCombat = K.makeMenuScrollPage("Combat", contentHolder)
 	local pageAbout = K.makeMenuScrollPage("About", contentHolder)
     local pageMacro = K.makeMenuScrollPage("Macro", contentHolder)
@@ -7540,6 +8229,7 @@ function K.buildMenu()
     pageMove.Visible = false
     pageWorld.Visible = false
     pageClient.Visible = false
+	pageTarget.Visible = false
     pageCombat.Visible = false
     pageAbout.Visible = false
     pageMacro.Visible = false
@@ -7551,6 +8241,7 @@ function K.buildMenu()
 		move = "Movement",
 		world = "World",
 		client = "Client",
+		target = "Target",
 		combat = "Combat",
 		macro = "Macro",
 		create = "Create",
@@ -7594,11 +8285,12 @@ function K.buildMenu()
 	local tabMoveBtn = makeNavTab("Move", 2)
 	local tabWorldBtn = makeNavTab("World", 3)
 	local tabClientBtn = makeNavTab("Client", 4)
-	local tabCombatBtn = makeNavTab("Combat", 5)
-	local tabCreateBtn = makeNavTab("Create", 6)
-	local tabMacroBtn = makeNavTab("Macro", 7)
-	local tabAboutBtn = makeNavTab("About", 8)
-	local tabCustomBtn = makeNavTab("Customize", 9)
+	local tabTargetBtn = makeNavTab("Target", 5)
+	local tabCombatBtn = makeNavTab("Combat", 6)
+	local tabCreateBtn = makeNavTab("Create", 7)
+	local tabMacroBtn = makeNavTab("Macro", 8)
+	local tabAboutBtn = makeNavTab("About", 9)
+	local tabCustomBtn = makeNavTab("Customize", 10)
 
 	menuRefs.topBar = topBar
 	menuRefs.title = title
@@ -7612,6 +8304,7 @@ function K.buildMenu()
 		tabMoveBtn,
 		tabWorldBtn,
 		tabClientBtn,
+		tabTargetBtn,
 		tabCombatBtn,
 		tabCreateBtn,
 		tabMacroBtn,
@@ -7624,6 +8317,7 @@ function K.buildMenu()
 		pageMove.Visible = which == "move"
 		pageWorld.Visible = which == "world"
 		pageClient.Visible = which == "client"
+		pageTarget.Visible = which == "target"
 		pageCombat.Visible = which == "combat"
 		pageMacro.Visible = which == "macro"
 		pageCreate.Visible = which == "create"
@@ -7634,6 +8328,7 @@ function K.buildMenu()
 		tabStyle(tabMoveBtn, which == "move")
 		tabStyle(tabWorldBtn, which == "world")
 		tabStyle(tabClientBtn, which == "client")
+		tabStyle(tabTargetBtn, which == "target")
 		tabStyle(tabCombatBtn, which == "combat")
 		tabStyle(tabMacroBtn, which == "macro")
 		tabStyle(tabCreateBtn, which == "create")
@@ -7652,6 +8347,10 @@ function K.buildMenu()
 	end)
 	tabClientBtn.MouseButton1Click:Connect(function()
 		switchTab("client")
+	end)
+	tabTargetBtn.MouseButton1Click:Connect(function()
+		switchTab("target")
+		K.refreshTargetKitList()
 	end)
 	tabCombatBtn.MouseButton1Click:Connect(function()
 		switchTab("combat")
@@ -7680,6 +8379,7 @@ function K.buildMenu()
 	K.menuFillMoveTab(pageMove)
 	K.menuFillWorldTab(pageWorld)
 	K.menuFillClientTab(pageClient, screen)
+	K.menuFillTargetTab(pageTarget)
 	K.menuFillCombatTab(pageCombat)
 	K.menuFillCustomizeTab(pageCustom, menuRefs)
 
@@ -7711,7 +8411,7 @@ function K.buildMenu()
 	about2.TextWrapped = true
 	about2.TextColor3 = Color3.fromRGB(200, 205, 220)
 	about2.Text =
-		"Move, World, Client, Combat, Create, Macro — local tools. Create = cinematic helpers (fling, anim slide, freecam, orbit). Other players’ physics are usually server-owned."
+		"Move, World, Client, Target, Combat, Create, Macro — local tools. Target = pick a player, fly-toward with optional ray dodge, or TP beside them. Create = fling, anim slide, freecam, orbit. Other players’ physics are usually server-owned."
 	about2.Size = UDim2.new(1, 0, 0, 48)
 	about2.Parent = pageAbout
 
@@ -7888,6 +8588,11 @@ me.CharacterAdded:Connect(function(char)
 	K.stopAutoForceTp()
 	ESP.autoForceTpBurstRunning = false
 	ESP.opFaceLockOn = false
+	ESP.opCameraLockOn = false
+	K.stopCameraLock()
+	if ESP.opCameraLockBtn then
+		ESP.opCameraLockBtn.Text = "Camera lock to target: off"
+	end
 	ESP.opAimLineOn = false
 	ESP.opBhopOn = false
 	ESP.opSpinOn = false
@@ -7905,6 +8610,7 @@ Players.PlayerAdded:Connect(function(plr)
 		end
 	end)
 	task.defer(K.refreshEspTargetList)
+	task.defer(K.refreshTargetKitList)
 end)
 
 Players.PlayerRemoving:Connect(K.onPlayerRemoving)
