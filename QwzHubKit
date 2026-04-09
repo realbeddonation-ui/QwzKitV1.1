@@ -1,3 +1,10 @@
+--[[
+	Tester toolkit — client-side QA helpers.
+	Landscape menu (#121212 solid panels, green accents); desktop uses full width/height, touch devices auto-fit via UIScale only.
+	Place in StarterPlayer > StarterPlayerScripts.
+	− (minus) or keypad − = show/hide · header − button closes the panel.
+]]
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -213,13 +220,13 @@ local ESP = {
 
 	-- ========= Menu customization =========
 	menuScale = 1,
-	menuBgAlpha = 0.12,
+	menuBgAlpha = 0,
 	menuDragLock = false,
 	menuRainbowBorderOn = false,
 	menuRainbowConn = nil,
-	menuWidth = 420,
-	menuHeight = 560,
-	menuCorner = 14,
+	menuWidth = 600,
+	menuHeight = 360,
+	menuCorner = 12,
 	menuTopAlpha = 0.15,
 	menuTabAlpha = 0.4,
 	menuBorderThickness = 1.2,
@@ -280,6 +287,11 @@ local CC = {
 	freecamConn = nil,
 	freecamSavedType = nil,
 	freecamSavedSubject = nil,
+	freecamSavedWalkSpeed = nil,
+	freecamSavedJumpPower = nil,
+	freecamSavedJumpHeight = nil,
+	freecamSavedAutoRotate = nil,
+	freecamSavedPlatformStand = nil,
 	orbitOn = false,
 	orbitConn = nil,
 	orbitRadius = 22,
@@ -310,18 +322,18 @@ local textGlow
 local btnGlow
 
 local COL = {
-	bg = Color3.fromRGB(150, 150, 150),
-	bgTop = Color3.fromRGB(130, 130, 130),
-	tabIdle = Color3.fromRGB(102, 102, 102),
-	tabOn = Color3.fromRGB(66, 66, 66),
-	tabGlow = Color3.fromRGB(10, 10, 10),
-	btn = Color3.fromRGB(90, 90, 90),
-	btnHot = Color3.fromRGB(74, 74, 74),
-	muted = Color3.fromRGB(228, 228, 228),
-	accent = Color3.fromRGB(64, 64, 64),
-	accentSoft = Color3.fromRGB(52, 52, 52),
-	listBg = Color3.fromRGB(20, 20, 20),
-	inputBg = Color3.fromRGB(96, 96, 96),
+	bg = Color3.fromRGB(18, 18, 18),
+	bgTop = Color3.fromRGB(30, 30, 30),
+	tabIdle = Color3.fromRGB(42, 42, 42),
+	tabOn = Color3.fromRGB(36, 36, 36),
+	tabGlow = Color3.fromRGB(20, 20, 20),
+	btn = Color3.fromRGB(46, 46, 46),
+	btnHot = Color3.fromRGB(38, 38, 38),
+	muted = Color3.fromRGB(160, 160, 160),
+	accent = Color3.fromRGB(46, 204, 113),
+	accentSoft = Color3.fromRGB(36, 150, 85),
+	listBg = Color3.fromRGB(30, 30, 30),
+	inputBg = Color3.fromRGB(48, 48, 48),
 }
 
 --[[
@@ -329,20 +341,20 @@ local COL = {
 	Theme tone / presets still work — they overwrite these with a neutral ramp until you RGB-edit again.
 ]]
 local MENU_CFG = {
-	panel = { 150, 150, 150 },
-	top = { 130, 130, 130 },
-	tabsIdle = { 102, 102, 102 },
-	tabsOn = { 66, 66, 66 },
-	outline = { 10, 10, 10 },
-	buttons = { 90, 90, 90 },
-	buttonsHot = { 74, 74, 74 },
-	text = { 228, 228, 228 },
-	accent = { 64, 64, 64 },
-	accentSoft = { 52, 52, 52 },
-	list = { 20, 20, 20 },
-	input = { 96, 96, 96 },
-	themeTone = 150,
-	textContrast = 228,
+	panel = { 18, 18, 18 },
+	top = { 30, 30, 30 },
+	tabsIdle = { 42, 42, 42 },
+	tabsOn = { 36, 36, 36 },
+	outline = { 20, 20, 20 },
+	buttons = { 46, 46, 46 },
+	buttonsHot = { 38, 38, 38 },
+	text = { 160, 160, 160 },
+	accent = { 46, 204, 113 },
+	accentSoft = { 36, 150, 85 },
+	list = { 30, 30, 30 },
+	input = { 48, 48, 48 },
+	themeTone = 18,
+	textContrast = 160,
 	accentShift = 0,
 }
 
@@ -862,7 +874,8 @@ function K.startFly()
 		if not hum or not root or not cam then return end
 		local isTouch = UserInputService.TouchEnabled
 		-- Keep touch controls responsive on mobile.
-		hum.PlatformStand = not isTouch
+		-- Always PlatformStand while flying: on touch, false let Humanoid gravity/floor logic fight velocity and you sink.
+		hum.PlatformStand = true
 		hum.AutoRotate = false
 		if flyHoldY == nil then
 			flyHoldY = root.Position.Y
@@ -877,15 +890,18 @@ function K.startFly()
 		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
 		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.C) then dir -= Vector3.yAxis end
 		if isTouch then
-			-- Mobile joystick writes world-space MoveDirection through the player module.
+			-- Mobile joystick → MoveDirection (ignore Y; deadzone avoids phantom drift / slow sink).
 			local md = hum.MoveDirection
 			local flat = Vector3.new(md.X, 0, md.Z)
-			if flat.Magnitude > 0.01 then
+			if flat.Magnitude > 0.14 then
 				dir += flat.Unit
 			end
-			if ESP.flyTouchUp then dir += Vector3.yAxis end
-			if ESP.flyTouchDown then dir -= Vector3.yAxis end
-			if hum.Jump then dir += Vector3.yAxis end
+			if ESP.flyTouchUp then
+				dir += Vector3.yAxis
+			end
+			if ESP.flyTouchDown then
+				dir -= Vector3.yAxis
+			end
 		end
 		local anyKeyPressed = dir.Magnitude > 0.01
 		if anyKeyPressed then
@@ -2487,10 +2503,6 @@ function K.makeToggleButton(scroll, text, callback)
 	b.ZIndex = 2
 	b.Parent = scroll
 	K.roundCorners(b, 8)
-	local grad = Instance.new("UIGradient")
-	grad.Rotation = 90
-	grad.Color = ColorSequence.new(COL.btn, COL.btnHot)
-	grad.Parent = b
 	local s = Instance.new("UIStroke", b)
 	s.Thickness = 1
 	s.Transparency = 0.6
@@ -2914,17 +2926,12 @@ function K.updateLabels()
 	end
 	if btnMain then
 		btnMain.Text = antiTpOn and "Turn off anti-teleport" or "Turn on anti-teleport"
-		local grad = btnMain:FindFirstChildOfClass("UIGradient")
 		if antiTpOn then
-			btnMain.BackgroundColor3 = COL.accent
-			if grad then
-				grad.Color = ColorSequence.new(Color3.fromRGB(220, 85, 100), Color3.fromRGB(120, 40, 55))
-			end
+			btnMain.BackgroundColor3 = Color3.fromRGB(140, 48, 58)
+			btnMain.TextColor3 = Color3.fromRGB(255, 245, 245)
 		else
 			btnMain.BackgroundColor3 = COL.btn
-			if grad then
-				grad.Color = ColorSequence.new(COL.btnHot, COL.btn)
-			end
+			btnMain.TextColor3 = K.getReadableTextColor(COL.btn)
 		end
 	end
 	if textSnap then
@@ -3708,6 +3715,34 @@ function CC.stopFreecam()
 		CC.freecamConn:Disconnect()
 		CC.freecamConn = nil
 	end
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_FreecamFreeze")
+	end)
+	local hum = K.getHumanoid()
+	if hum then
+		if CC.freecamSavedWalkSpeed ~= nil then
+			hum.WalkSpeed = CC.freecamSavedWalkSpeed
+		end
+		if CC.freecamSavedJumpPower ~= nil then
+			hum.JumpPower = CC.freecamSavedJumpPower
+		end
+		if CC.freecamSavedJumpHeight ~= nil then
+			pcall(function()
+				hum.JumpHeight = CC.freecamSavedJumpHeight
+			end)
+		end
+		if CC.freecamSavedAutoRotate ~= nil then
+			hum.AutoRotate = CC.freecamSavedAutoRotate
+		end
+		if CC.freecamSavedPlatformStand ~= nil then
+			hum.PlatformStand = CC.freecamSavedPlatformStand
+		end
+	end
+	CC.freecamSavedWalkSpeed = nil
+	CC.freecamSavedJumpPower = nil
+	CC.freecamSavedJumpHeight = nil
+	CC.freecamSavedAutoRotate = nil
+	CC.freecamSavedPlatformStand = nil
 	local cam = Workspace.CurrentCamera
 	if cam and CC.freecamSavedType then
 		cam.CameraType = CC.freecamSavedType
@@ -3733,6 +3768,24 @@ function CC.startFreecam()
 	cam.CameraType = Enum.CameraType.Scriptable
 	cam.CameraSubject = nil
 	CC.freecamOn = true
+	local hum0 = K.getHumanoid()
+	if hum0 then
+		CC.freecamSavedWalkSpeed = hum0.WalkSpeed
+		CC.freecamSavedJumpPower = hum0.JumpPower
+		CC.freecamSavedAutoRotate = hum0.AutoRotate
+		CC.freecamSavedPlatformStand = hum0.PlatformStand
+		CC.freecamSavedJumpHeight = nil
+		pcall(function()
+			CC.freecamSavedJumpHeight = hum0.JumpHeight
+		end)
+		hum0.WalkSpeed = 0
+		hum0.JumpPower = 0
+		pcall(function()
+			hum0.JumpHeight = 0
+		end)
+		hum0.AutoRotate = false
+		hum0.PlatformStand = true
+	end
 	local yaw, pitch = 0, 0
 	CC.freecamConn = RunService.RenderStepped:Connect(function(dt)
 		if not CC.freecamOn then
@@ -3771,6 +3824,20 @@ function CC.startFreecam()
 			pos += move.Unit * spd * dt
 		end
 		c.CFrame = CFrame.new(pos) * rot
+	end)
+	-- After normal RenderStepped (e.g. fly), zero HRP velocity so WASD/Space only move the camera.
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_FreecamFreeze")
+	end)
+	RunService:BindToRenderStep(MENU_NAME .. "_FreecamFreeze", 2147483645, function()
+		if not CC.freecamOn then
+			return
+		end
+		local root = K.getRoot()
+		if root then
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+		end
 	end)
 end
 
@@ -4467,10 +4534,6 @@ function K.buildTesterMenuAntiTab(pageAnti)
 	btnMain.AutoButtonColor = false
 	btnMain.Parent = pageAnti
 	K.roundCorners(btnMain, 10)
-	local mainGrad = Instance.new("UIGradient")
-	mainGrad.Rotation = 90
-	mainGrad.Color = ColorSequence.new(COL.btnHot, COL.btn)
-	mainGrad.Parent = btnMain
 	btnMain.MouseButton1Click:Connect(function()
 		antiTpOn = not antiTpOn
 		K.setAntiTpRunning()
@@ -4595,7 +4658,7 @@ function K.menuFillMoveTab(pageMove)
 	flyLbl.TextWrapped = true
 	flyLbl.TextColor3 = COL.muted
 	flyLbl.Text =
-		"Camera-relative: W/S along look, A/D strafe, Space/Ctrl world up/down. Hotkey toggles fly (see below)."
+		"Camera-relative: W/S along look, A/D strafe, Space/Ctrl world up/down. Touch: joystick moves on the ground plane; UP/DN on quick bar for vertical. Hotkey toggles fly (see below)."
 	flyLbl.Size = UDim2.new(1, 0, 0, 44)
 	flyLbl.Parent = pageMove
 	ESP.labels.move.fly = K.makeToggleButton(pageMove, "Flying: off", function()
@@ -5883,10 +5946,6 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	scanAnimBtn.AutoButtonColor = false
 	scanAnimBtn.Parent = pageCombat
 	K.roundCorners(scanAnimBtn, 8)
-	local scanAnimGrad = Instance.new("UIGradient")
-	scanAnimGrad.Rotation = 90
-	scanAnimGrad.Color = ColorSequence.new(COL.btnHot, COL.btn)
-	scanAnimGrad.Parent = scanAnimBtn
 	scanAnimBtn.MouseButton1Click:Connect(function()
 		animPathFilterText = pathFilterBox.Text
 		K.scanAnimationsIntoResults()
@@ -6686,6 +6745,9 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		if menuRefs.tabBar then
 			menuRefs.tabBar.BackgroundTransparency = ESP.menuTabAlpha
 		end
+		if menuRefs.mainArea then
+			menuRefs.mainArea.BackgroundTransparency = 1
+		end
 		if menuRefs.borderStroke then
 			menuRefs.borderStroke.Thickness = ESP.menuBorderThickness
 			menuRefs.borderStroke.Transparency = ESP.menuBorderAlpha
@@ -6704,12 +6766,6 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 			for _, b in ipairs(menuRefs.tabButtons) do
 				b.TextSize = ESP.menuTabTextSize
 			end
-		end
-		if menuRefs.topBarGrad then
-			menuRefs.topBarGrad.Color = ColorSequence.new(COL.bgTop, COL.tabIdle)
-		end
-		if menuRefs.shellGrad then
-			menuRefs.shellGrad.Color = ColorSequence.new(COL.bg, COL.bgTop)
 		end
 		if menuRefs.title then
 			menuRefs.title.TextColor3 = Color3.fromRGB(235, 235, 235)
@@ -6730,7 +6786,7 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		end
 		if panel then
 			for _, d in ipairs(panel:GetDescendants()) do
-				if d:IsA("TextButton") and d.Parent ~= menuRefs.tabScroll and d ~= menuRefs.closeBtn then
+				if d:IsA("TextButton") and not d:GetAttribute("KitTabNav") and d.Parent ~= menuRefs.tabScroll and d ~= menuRefs.closeBtn and d ~= btnMain then
 					if d:GetAttribute("KitStepBtn") then
 						d.AutoButtonColor = false
 						d.BackgroundColor3 = COL.btn
@@ -6740,14 +6796,8 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 							ss.Color = COL.tabGlow
 						end
 					else
-						local g = d:FindFirstChildOfClass("UIGradient")
-						if g then
-							d.BackgroundColor3 = COL.btn
-							d.TextColor3 = K.getReadableTextColor(COL.btn)
-							g.Color = ColorSequence.new(COL.btn, COL.btnHot)
-						else
-							d.TextColor3 = K.getReadableTextColor(d.BackgroundColor3)
-						end
+						d.BackgroundColor3 = COL.btn
+						d.TextColor3 = K.getReadableTextColor(COL.btn)
 						local s = d:FindFirstChildOfClass("UIStroke")
 						if s then
 							s.Color = COL.tabGlow
@@ -6777,7 +6827,18 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		for _, rs in ipairs(rgbSyncers) do
 			pcall(rs)
 		end
-		ensureScale().Scale = ESP.menuScale
+		local sc = ESP.menuScale
+		if UserInputService.TouchEnabled then
+			local cam = Workspace.CurrentCamera
+			local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
+			local needW = ESP.menuWidth * ESP.menuScale
+			local needH = ESP.menuHeight * ESP.menuScale
+			local maxW = math.max(200, vp.X * 0.92)
+			local maxH = math.max(160, vp.Y * 0.52)
+			local fit = math.min(1, maxW / math.max(1, needW), maxH / math.max(1, needH))
+			sc = math.clamp(ESP.menuScale * fit, 0.5, ESP.menuScale)
+		end
+		ensureScale().Scale = sc
 		menuRefs.dragLocked = ESP.menuDragLock
 	end
 
@@ -7110,14 +7171,14 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 
 	local resetBtn = K.makeToggleButton(pageCustom, "Reset all customization settings", function()
 		ESP.menuScale = 1
-		ESP.menuBgAlpha = 0.12
+		ESP.menuBgAlpha = 0
 		ESP.menuDragLock = false
 		ESP.menuRainbowBorderOn = false
-		ESP.menuWidth = 420
-		ESP.menuHeight = 560
-		ESP.menuCorner = 14
-		ESP.menuTopAlpha = 0.15
-		ESP.menuTabAlpha = 0.4
+		ESP.menuWidth = 760
+		ESP.menuHeight = 360
+		ESP.menuCorner = 12
+		ESP.menuTopAlpha = 0
+		ESP.menuTabAlpha = 0.35
 		ESP.menuBorderThickness = 1.2
 		ESP.menuBorderAlpha = 0.35
 		ESP.menuShowSubtitle = true
@@ -7126,7 +7187,24 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		ESP.menuHideTabScrollbar = false
 		ESP.menuAlwaysTop = false
 		ESP.mobileQuickButtonsOn = true
-		applySimpleTheme(150, 228, 0)
+		MENU_CFG.panel = { 18, 18, 18 }
+		MENU_CFG.top = { 30, 30, 30 }
+		MENU_CFG.tabsIdle = { 42, 42, 42 }
+		MENU_CFG.tabsOn = { 36, 36, 36 }
+		MENU_CFG.outline = { 20, 20, 20 }
+		MENU_CFG.buttons = { 46, 46, 46 }
+		MENU_CFG.buttonsHot = { 38, 38, 38 }
+		MENU_CFG.text = { 160, 160, 160 }
+		MENU_CFG.accent = { 46, 204, 113 }
+		MENU_CFG.accentSoft = { 36, 150, 85 }
+		MENU_CFG.list = { 30, 30, 30 }
+		MENU_CFG.input = { 48, 48, 48 }
+		MENU_CFG.themeTone = 18
+		MENU_CFG.textContrast = 160
+		MENU_CFG.accentShift = 0
+		applyMenuCfgToCol()
+		applyMenuVisuals()
+		K.updateLabels()
 		applyRainbow()
 		local inset = GuiService:GetGuiInset()
 		panel.Position = UDim2.new(0, 12 + inset.X, 0.5, -panel.AbsoluteSize.Y / 2)
@@ -7155,16 +7233,7 @@ end
 function K.buildMenu()
 	local isTouch = UserInputService.TouchEnabled
 	if isTouch then
-		local cam = Workspace.CurrentCamera
-		local vp = cam and cam.ViewportSize or Vector2.new(900, 600)
-		local maxW = math.max(260, math.floor(vp.X * 0.62))
-		local maxH = math.max(360, math.floor(vp.Y * 0.72))
-		ESP.menuWidth = math.floor(math.min(ESP.menuWidth, maxW, 360) + 0.5)
-		ESP.menuHeight = math.floor(math.min(ESP.menuHeight, maxH, 500) + 0.5)
-		if ESP.menuScale > 0.9 then
-			ESP.menuScale = 0.85
-		end
-		ESP.menuTabTextSize = math.min(ESP.menuTabTextSize, 9)
+		ESP.menuTabTextSize = math.min(ESP.menuTabTextSize, 10)
 	end
 
 	local screen = Instance.new("ScreenGui")
@@ -7175,20 +7244,17 @@ function K.buildMenu()
 	screen.Parent = guiRoot
 
 	panel = Instance.new("Frame")
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Size = UDim2.fromOffset(ESP.menuWidth, ESP.menuHeight)
-	panel.Position = UDim2.new(0, 20, 0.5, -math.floor(ESP.menuHeight / 2))
+	panel.Position = UDim2.new(0.5, 0, 0.5, 0)
 	panel.BackgroundColor3 = COL.bg
 	panel.BackgroundTransparency = ESP.menuBgAlpha
 	panel.BorderSizePixel = 0
 	panel.Parent = screen
 	local panelCorner = K.roundCorners(panel, ESP.menuCorner)
-	local shellGrad = Instance.new("UIGradient")
-	shellGrad.Rotation = 115
-	shellGrad.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, COL.bg),
-		ColorSequenceKeypoint.new(1, COL.bgTop),
-	})
-	shellGrad.Parent = panel
+	local menuScaleObj = Instance.new("UIScale")
+	menuScaleObj.Scale = ESP.menuScale
+	menuScaleObj.Parent = panel
 
 	local line = Instance.new("UIStroke", panel)
 	line.Color = COL.tabGlow
@@ -7199,7 +7265,7 @@ function K.buildMenu()
 		panel = panel,
 		borderStroke = line,
 		dragLocked = ESP.menuDragLock,
-		scaleObj = nil,
+		scaleObj = menuScaleObj,
 		panelCorner = panelCorner,
 		screen = screen,
 	}
@@ -7245,12 +7311,6 @@ function K.buildMenu()
 	topBar.ZIndex = 2
 	topBar.Parent = panel
 	K.roundCorners(topBar, 14)
-
-	local topShine = Instance.new("UIGradient")
-	topShine.Rotation = 90
-	topShine.Color = ColorSequence.new(COL.bgTop, COL.tabIdle)
-	topShine.Transparency = NumberSequence.new(0.35, 1)
-	topShine.Parent = topBar
 
 	local title = Instance.new("TextLabel")
 	title.BackgroundTransparency = 1
@@ -7343,53 +7403,130 @@ function K.buildMenu()
 		end
 	end)
 
-	local tabH = isTouch and 32 or 36
-	local tabY = dragHeight
-	local tabBar = Instance.new("Frame")
-	tabBar.BackgroundColor3 = COL.bgTop
-	tabBar.BackgroundTransparency = ESP.menuTabAlpha
-	tabBar.BorderSizePixel = 0
-	tabBar.ClipsDescendants = true
-	tabBar.Position = UDim2.fromOffset(0, tabY)
-	tabBar.Size = UDim2.new(1, 0, 0, tabH)
-	tabBar.Parent = panel
+	local bodyShell = Instance.new("Frame")
+	bodyShell.Name = "BodyShell"
+	bodyShell.BackgroundTransparency = 1
+	bodyShell.BorderSizePixel = 0
+	bodyShell.Position = UDim2.fromOffset(0, dragHeight)
+	bodyShell.Size = UDim2.new(1, 0, 1, -dragHeight)
+	bodyShell.Parent = panel
 
-	local tabScroll = Instance.new("ScrollingFrame")
-	tabScroll.Name = "TabScroll"
-	tabScroll.BackgroundTransparency = 1
-	tabScroll.BorderSizePixel = 0
-	tabScroll.Position = UDim2.fromOffset(0, 0)
-	tabScroll.Size = UDim2.new(1, 0, 1, 0)
-	tabScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-	tabScroll.AutomaticCanvasSize = Enum.AutomaticSize.X
-	tabScroll.ScrollingDirection = Enum.ScrollingDirection.X
-	tabScroll.ScrollBarThickness = 3
-	tabScroll.ScrollBarImageColor3 = COL.tabGlow
-	tabScroll.ScrollingEnabled = true
-	tabScroll.Parent = tabBar
+	local bodyLayout = Instance.new("UIListLayout")
+	bodyLayout.FillDirection = Enum.FillDirection.Horizontal
+	bodyLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+	bodyLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+	bodyLayout.Padding = UDim.new(0, 6)
+	bodyLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	bodyLayout.Parent = bodyShell
+
+	local sidebar = Instance.new("Frame")
+	sidebar.Name = "Sidebar"
+	sidebar.BackgroundTransparency = 1
+	sidebar.BorderSizePixel = 0
+	sidebar.Size = UDim2.new(0.30, 0, 1, 0)
+	sidebar.LayoutOrder = 1
+	sidebar.ClipsDescendants = true
+	sidebar.Parent = bodyShell
+
+	local sideCons = Instance.new("UISizeConstraint")
+	sideCons.MinSize = Vector2.new(92, 0)
+	sideCons.MaxSize = Vector2.new(220, 10000)
+	sideCons.Parent = sidebar
+
+	local navHeader = Instance.new("Frame")
+	navHeader.BackgroundTransparency = 1
+	navHeader.Size = UDim2.new(1, 0, 0, 40)
+	navHeader.Position = UDim2.fromOffset(0, 0)
+	navHeader.Parent = sidebar
+
+	local navBrand = Instance.new("TextLabel")
+	navBrand.BackgroundTransparency = 1
+	navBrand.Font = Enum.Font.GothamBlack
+	navBrand.TextSize = isTouch and 13 or 15
+	navBrand.TextXAlignment = Enum.TextXAlignment.Left
+	navBrand.TextColor3 = Color3.fromRGB(46, 204, 113)
+	navBrand.Text = "Qwz Kit"
+	navBrand.Position = UDim2.fromOffset(0, 2)
+	navBrand.Size = UDim2.new(1, -4, 0, 18)
+	navBrand.Parent = navHeader
+
+	local navVer = Instance.new("TextLabel")
+	navVer.BackgroundTransparency = 1
+	navVer.Font = Enum.Font.Gotham
+	navVer.TextSize = 10
+	navVer.TextXAlignment = Enum.TextXAlignment.Left
+	navVer.TextColor3 = COL.muted
+	navVer.Text = "Tester tools"
+	navVer.Position = UDim2.fromOffset(0, 20)
+	navVer.Size = UDim2.new(1, -4, 0, 14)
+	navVer.Parent = navHeader
+
+	local tabNavScroll = Instance.new("ScrollingFrame")
+	tabNavScroll.Name = "TabScroll"
+	tabNavScroll.BackgroundTransparency = 1
+	tabNavScroll.BorderSizePixel = 0
+	tabNavScroll.Position = UDim2.new(0, 0, 0, 42)
+	tabNavScroll.Size = UDim2.new(1, 0, 1, -70)
+	tabNavScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	tabNavScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	tabNavScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+	tabNavScroll.ScrollBarThickness = isTouch and 2 or 3
+	tabNavScroll.ScrollBarImageColor3 = COL.tabGlow
+	tabNavScroll.ScrollingEnabled = true
+	tabNavScroll.ClipsDescendants = true
+	tabNavScroll.Parent = sidebar
 	if ESP.menuHideTabScrollbar then
-		tabScroll.ScrollBarThickness = 0
+		tabNavScroll.ScrollBarThickness = 0
 	end
 
-	local tabLayout = Instance.new("UIListLayout")
-	tabLayout.FillDirection = Enum.FillDirection.Horizontal
-	tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	tabLayout.Padding = UDim.new(0, 5)
-	tabLayout.Parent = tabScroll
+	local tabNavLay = Instance.new("UIListLayout")
+	tabNavLay.SortOrder = Enum.SortOrder.LayoutOrder
+	tabNavLay.Padding = UDim.new(0, 5)
+	tabNavLay.Parent = tabNavScroll
 
-	local tabPad = Instance.new("UIPadding", tabScroll)
-	tabPad.PaddingLeft = UDim.new(0, 6)
-	tabPad.PaddingRight = UDim.new(0, 6)
-	tabPad.PaddingTop = UDim.new(0, 5)
-	tabPad.PaddingBottom = UDim.new(0, 5)
+	local navPad = Instance.new("UIPadding")
+	navPad.PaddingBottom = UDim.new(0, 4)
+	navPad.PaddingRight = UDim.new(0, 2)
+	navPad.Parent = tabNavScroll
 
-	local contentY = tabY + tabH + 4
+	local navHint = Instance.new("TextLabel")
+	navHint.BackgroundTransparency = 1
+	navHint.Font = Enum.Font.Gotham
+	navHint.TextSize = 9
+	navHint.TextWrapped = true
+	navHint.TextXAlignment = Enum.TextXAlignment.Left
+	navHint.TextColor3 = COL.muted
+	navHint.Text = isTouch and "≡ opens · drag top bar" or "− key toggles · drag top bar"
+	navHint.AnchorPoint = Vector2.new(0, 1)
+	navHint.Position = UDim2.new(0, 0, 1, -2)
+	navHint.Size = UDim2.new(1, -2, 0, 26)
+	navHint.Parent = sidebar
+
+	local mainArea = Instance.new("Frame")
+	mainArea.Name = "MainArea"
+	mainArea.BackgroundTransparency = 1
+	mainArea.BorderSizePixel = 0
+	mainArea.Size = UDim2.new(0.70, -6, 1, 0)
+	mainArea.LayoutOrder = 2
+	mainArea.ClipsDescendants = true
+	mainArea.Parent = bodyShell
+
+	local tabTitle = Instance.new("TextLabel")
+	tabTitle.BackgroundTransparency = 1
+	tabTitle.Font = Enum.Font.GothamBold
+	tabTitle.TextSize = isTouch and 13 or 15
+	tabTitle.TextXAlignment = Enum.TextXAlignment.Left
+	tabTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+	tabTitle.Text = "Anti TP"
+	tabTitle.Position = UDim2.fromOffset(0, 0)
+	tabTitle.Size = UDim2.new(1, -4, 0, 22)
+	tabTitle.Parent = mainArea
+
 	local contentHolder = Instance.new("Frame")
 	contentHolder.BackgroundTransparency = 1
-	contentHolder.Position = UDim2.fromOffset(0, contentY)
-	contentHolder.Size = UDim2.new(1, 0, 1, -contentY)
-	contentHolder.Parent = panel
-
+	contentHolder.Position = UDim2.fromOffset(0, 26)
+	contentHolder.Size = UDim2.new(1, 0, 1, -26)
+	contentHolder.Parent = mainArea
 
 	local pageAnti = K.makeMenuScrollPage("AntiTP", contentHolder)
 	local pageMove = K.makeMenuScrollPage("Movement", contentHolder)
@@ -7409,88 +7546,67 @@ function K.buildMenu()
 	pageCreate.Visible = false
 	pageCustom.Visible = false
 
+	local tabTitles = {
+		anti = "Anti TP",
+		move = "Movement",
+		world = "World",
+		client = "Client",
+		combat = "Combat",
+		macro = "Macro",
+		create = "Create",
+		about = "About",
+		custom = "Customize",
+	}
+
 	local function tabStyle(btn, on)
 		btn.AutoButtonColor = false
 		btn.Font = Enum.Font.GothamBold
-		btn.TextSize = ESP.menuTabTextSize
-		btn.Size = UDim2.new(0, 64, 0, 28)
-		if on then
-			btn.BackgroundColor3 = COL.tabOn
-			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-		else
-			btn.BackgroundColor3 = COL.tabIdle
-			btn.TextColor3 = Color3.fromRGB(230, 230, 230)
-		end
-		K.roundCorners(btn, 9)
+		btn.TextSize = math.clamp(ESP.menuTabTextSize, 9, 12)
+		btn.TextXAlignment = Enum.TextXAlignment.Left
+		btn.Size = UDim2.new(1, -6, 0, isTouch and 30 or 32)
 		local g = btn:FindFirstChildOfClass("UIGradient")
-		if not g then
-			g = Instance.new("UIGradient", btn)
-			g.Rotation = 90
+		if g then
+			g:Destroy()
 		end
-		if on then
-			g.Color = ColorSequence.new(COL.tabOn, COL.btn)
-		else
-			g.Color = ColorSequence.new(COL.tabIdle, COL.bgTop)
-		end
+		btn.BackgroundColor3 = on and Color3.fromRGB(42, 46, 48) or Color3.fromRGB(34, 34, 38)
+		btn.TextColor3 = on and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(200, 202, 210)
 		local s = btn:FindFirstChildOfClass("UIStroke")
 		if not s then
-			s = Instance.new("UIStroke", btn)
-			s.Thickness = 1
+			s = Instance.new("UIStroke")
+			s.Parent = btn
 		end
-		s.Color = on and COL.accent or COL.tabGlow
-		s.Transparency = on and 0.35 or 0.62
+		s.Thickness = on and 1.5 or 1
+		s.Color = on and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(48, 50, 56)
+		s.Transparency = on and 0.12 or 0.55
+		K.roundCorners(btn, 8)
 	end
 
-	local tabAntiBtn = Instance.new("TextButton")
-	tabAntiBtn.LayoutOrder = 1
-	tabAntiBtn.Text = "Anti TP"
-	tabAntiBtn.Parent = tabScroll
+	local function makeNavTab(txt, order)
+		local b = Instance.new("TextButton")
+		b.LayoutOrder = order
+		b.Text = "  " .. txt
+		b:SetAttribute("KitTabNav", true)
+		b.Parent = tabNavScroll
+		return b
+	end
 
-	local tabMoveBtn = Instance.new("TextButton")
-	tabMoveBtn.LayoutOrder = 2
-	tabMoveBtn.Text = "Move"
-	tabMoveBtn.Parent = tabScroll
-
-	local tabWorldBtn = Instance.new("TextButton")
-	tabWorldBtn.LayoutOrder = 3
-	tabWorldBtn.Text = "World"
-	tabWorldBtn.Parent = tabScroll
-
-	local tabClientBtn = Instance.new("TextButton")
-	tabClientBtn.LayoutOrder = 4
-	tabClientBtn.Text = "Client"
-	tabClientBtn.Parent = tabScroll
-
-	local tabCombatBtn = Instance.new("TextButton")
-	tabCombatBtn.LayoutOrder = 5
-	tabCombatBtn.Text = "Combat"
-	tabCombatBtn.Parent = tabScroll
-
-	local tabCreateBtn = Instance.new("TextButton")
-	tabCreateBtn.LayoutOrder = 6
-	tabCreateBtn.Text = "Create"
-	tabCreateBtn.Parent = tabScroll
-	local tabMacroBtn = Instance.new("TextButton")
-	tabMacroBtn.LayoutOrder = 7
-	tabMacroBtn.Text = "Macro"
-	tabMacroBtn.Parent = tabScroll
-	local tabAboutBtn = Instance.new("TextButton")
-	tabAboutBtn.LayoutOrder = 8
-	tabAboutBtn.Text = "About"
-	tabAboutBtn.Parent = tabScroll
-	local tabCustomBtn = Instance.new("TextButton")
-	tabCustomBtn.LayoutOrder = 9
-	tabCustomBtn.Text = "Customize"
-	tabCustomBtn.Parent = tabScroll
+	local tabAntiBtn = makeNavTab("Anti TP", 1)
+	local tabMoveBtn = makeNavTab("Move", 2)
+	local tabWorldBtn = makeNavTab("World", 3)
+	local tabClientBtn = makeNavTab("Client", 4)
+	local tabCombatBtn = makeNavTab("Combat", 5)
+	local tabCreateBtn = makeNavTab("Create", 6)
+	local tabMacroBtn = makeNavTab("Macro", 7)
+	local tabAboutBtn = makeNavTab("About", 8)
+	local tabCustomBtn = makeNavTab("Customize", 9)
 
 	menuRefs.topBar = topBar
-	menuRefs.topBarGrad = topShine
-	menuRefs.shellGrad = shellGrad
 	menuRefs.title = title
 	menuRefs.subtitle = subtitle
 	menuRefs.closeBtn = closeBtn
-	menuRefs.tabBar = tabBar
-	menuRefs.tabScroll = tabScroll
+	menuRefs.tabBar = nil
+	menuRefs.mainArea = mainArea
+	menuRefs.tabScroll = tabNavScroll
 	menuRefs.tabButtons = {
 		tabAntiBtn,
 		tabMoveBtn,
@@ -7504,25 +7620,26 @@ function K.buildMenu()
 	}
 
 	local function switchTab(which)
-	pageAnti.Visible = which == "anti"
-	pageMove.Visible = which == "move"
-	pageWorld.Visible = which == "world"
-	pageClient.Visible = which == "client"
-	pageCombat.Visible = which == "combat"
-	pageMacro.Visible = which == "macro"
-	pageCreate.Visible = which == "create"
-	pageAbout.Visible = which == "about"
-	pageCustom.Visible = which == "custom"
-	tabStyle(tabAntiBtn, which == "anti")
-	tabStyle(tabMoveBtn, which == "move")
-	tabStyle(tabWorldBtn, which == "world")
-	tabStyle(tabClientBtn, which == "client")
-	tabStyle(tabCombatBtn, which == "combat")
-	tabStyle(tabMacroBtn, which == "macro")
-	tabStyle(tabCreateBtn, which == "create")
-	tabStyle(tabAboutBtn, which == "about")
-	tabStyle(tabCustomBtn, which == "custom")
-end
+		pageAnti.Visible = which == "anti"
+		pageMove.Visible = which == "move"
+		pageWorld.Visible = which == "world"
+		pageClient.Visible = which == "client"
+		pageCombat.Visible = which == "combat"
+		pageMacro.Visible = which == "macro"
+		pageCreate.Visible = which == "create"
+		pageAbout.Visible = which == "about"
+		pageCustom.Visible = which == "custom"
+		tabTitle.Text = tabTitles[which] or which
+		tabStyle(tabAntiBtn, which == "anti")
+		tabStyle(tabMoveBtn, which == "move")
+		tabStyle(tabWorldBtn, which == "world")
+		tabStyle(tabClientBtn, which == "client")
+		tabStyle(tabCombatBtn, which == "combat")
+		tabStyle(tabMacroBtn, which == "macro")
+		tabStyle(tabCreateBtn, which == "create")
+		tabStyle(tabAboutBtn, which == "about")
+		tabStyle(tabCustomBtn, which == "custom")
+	end
 
 	tabAntiBtn.MouseButton1Click:Connect(function()
 		switchTab("anti")
@@ -7793,8 +7910,10 @@ end)
 Players.PlayerRemoving:Connect(K.onPlayerRemoving)
 
 task.defer(function()
-	local inset = GuiService:GetGuiInset()
-	panel.Position = UDim2.new(0, 12 + inset.X, 0.5, -panel.AbsoluteSize.Y / 2)
+	if panel then
+		panel.AnchorPoint = Vector2.new(0.5, 0.5)
+		panel.Position = UDim2.new(0.5, 0, 0.5, 0)
+	end
 end)
 
 if me.Character then
