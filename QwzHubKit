@@ -1,4 +1,4 @@
---[[
+=--[[
 	Tester toolkit — client-side QA helpers.
 	Landscape menu (#121212 solid panels, green accents); desktop uses full width/height, touch devices auto-fit via UIScale only.
 	Place in StarterPlayer > StarterPlayerScripts.
@@ -280,7 +280,35 @@ local ESP = {
 	targetKitElevBtn = nil,
 	mobileQuickOffX = -48,
 	mobileQuickOffY = 12,
+	-- Move tab: keep walk/jump from being lowered by game scripts (state here = fewer chunk locals)
+	antiSlownessOn = false,
+	antiSlownessConn = nil,
+	cachedJumpHeight = nil,
+	moveAnim = {
+		on = false,
+		conn = nil,
+		animatorConns = {},
+		animChildConn = nil,
+		charDescConn = nil,
+		slotReplaceId = { "", "", "", "" },
+		slotPattern = { "projection breaker", "bleedout", "decisive strike", "cursory impact" },
+		activeReplaceTrack = nil,
+		toggleBtn = nil,
+		replaceLbl = {},
+		_hookedAnimators = {},
+	},
+	animBlock = {
+		on = false,
+		conn = nil,
+		animatorConns = {},
+		animChildConn = nil,
+		charDescConn = nil,
+		_hookedAnimators = {},
+		toggleBtn = nil,
+	},
 }
+
+ESP.moveAnim.marked = setmetatable({}, { __mode = "k" })
 
 -- ========= Macros =========
 local Macro = {
@@ -1125,6 +1153,71 @@ function K.setLoopWalkRunning()
 	end
 end
 
+function K.stopAntiSlowness()
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_AntiSlow")
+	end)
+	if ESP.antiSlownessConn then
+		ESP.antiSlownessConn:Disconnect()
+		ESP.antiSlownessConn = nil
+	end
+end
+
+function K.startAntiSlowness()
+	K.stopAntiSlowness()
+	local function antiSlowStep()
+		if not ESP.antiSlownessOn then
+			return
+		end
+		if flyOn or CC.freecamOn then
+			return
+		end
+		local h = K.getHumanoid()
+		if not h or h.Health <= 0 then
+			return
+		end
+		local baseWs = savedWalkSpeed
+		if baseWs <= 0 or baseWs ~= baseWs then
+			baseWs = 16
+		end
+		local wantWs = combatBoostOn and (baseWs * combatBoostMult) or baseWs
+		if h.WalkSpeed < wantWs - 0.05 then
+			h.WalkSpeed = wantWs
+		end
+		if h.UseJumpPower then
+			local jp = savedJumpPower
+			if jp > 0 and h.JumpPower < jp - 0.25 then
+				h.JumpPower = jp
+			end
+		else
+			local jh = ESP.cachedJumpHeight
+			if type(jh) == "number" and jh > 0.05 and h.JumpHeight < jh - 0.02 then
+				h.JumpHeight = jh
+			end
+		end
+	end
+	local stepName = MENU_NAME .. "_AntiSlow"
+	local bound = pcall(function()
+		RunService:BindToRenderStep(stepName, Enum.RenderPriority.Last.Value, antiSlowStep)
+	end)
+	if not bound then
+		bound = pcall(function()
+			RunService:BindToRenderStep(stepName, RENDER_LAST, antiSlowStep)
+		end)
+	end
+	if not bound then
+		ESP.antiSlownessConn = RunService.Heartbeat:Connect(antiSlowStep)
+	end
+end
+
+function K.setAntiSlownessRunning()
+	if ESP.antiSlownessOn then
+		K.startAntiSlowness()
+	else
+		K.stopAntiSlowness()
+	end
+end
+
 -- ========= Camera-relative teleport =========
 function K.tpRelativeCamera(forwardMul, rightMul, yOffset)
 	local char = me.Character
@@ -1202,7 +1295,12 @@ function K.applyWalkJump()
 	if h.UseJumpPower then
 		h.JumpPower = savedJumpPower
 	else
-		h.JumpHeight = (h.JumpHeight > 0 and h.JumpHeight or 7.2)
+		local jh = ESP.cachedJumpHeight
+		if type(jh) == "number" and jh > 0 then
+			h.JumpHeight = jh
+		else
+			h.JumpHeight = (h.JumpHeight > 0 and h.JumpHeight or 7.2)
+		end
 	end
 	Workspace.Gravity = savedGravity
 end
@@ -1214,6 +1312,10 @@ function K.cacheHumanoidDefaults(h)
 	savedWalkSpeed = h.WalkSpeed
 	savedJumpPower = h.JumpPower
 	savedGravity = Workspace.Gravity
+	local jh = h.JumpHeight
+	if type(jh) == "number" and jh > 0.01 then
+		ESP.cachedJumpHeight = jh
+	end
 end
 
 -- ========= World: fullbright / fog =========
@@ -1714,6 +1816,472 @@ function K.refreshAnimTrackReadout()
 		table.insert(bits, string.format("%s %.2f", an, tr.TimePosition))
 	end
 	animPlayingReadout.Text = "Playing: " .. tostring(#tracks) .. "  " .. table.concat(bits, " | ")
+end
+
+function K.refreshMoveAnimOverrideLabels()
+	local m = ESP.moveAnim
+	if not m.replaceLbl then
+		return
+	end
+	for si = 1, 4 do
+		local lbl = m.replaceLbl[si]
+		if lbl then
+			local id = m.slotReplaceId[si] or ""
+			if id == "" then
+				lbl.Text = "→ (pick row in scanner, Bind)"
+			else
+				local short = id
+				if #short > 40 then
+					short = string.sub(short, 1, 40) .. "…"
+				end
+				lbl.Text = "→ " .. short
+			end
+		end
+	end
+end
+
+function K.bindFinderAnimToMoveSlot(slotIdx)
+	if not (animScanSelected and animScanSelected:IsA("Animation")) then
+		warn("[TesterToolkit] Pick an animation row in the scanner above, then tap Bind again.")
+		return
+	end
+	local id = animScanSelected.AnimationId or ""
+	if id == "" then
+		warn("[TesterToolkit] Selected animation has no AnimationId.")
+		return
+	end
+	ESP.moveAnim.slotReplaceId[slotIdx] = id
+	K.refreshMoveAnimOverrideLabels()
+end
+
+function K.moveAnimBuildHaystack(anim)
+	if not anim then
+		return ""
+	end
+	local aid = string.lower(tostring(anim.AnimationId or ""))
+	return string.lower((anim.Name or "") .. " " .. anim:GetFullName() .. " " .. aid)
+end
+
+function K.moveAnimIdsMatch(a, b)
+	local sa, sb = tostring(a or ""), tostring(b or "")
+	local na = string.match(sa, "(%d+)")
+	local nb = string.match(sb, "(%d+)")
+	if na and nb and na == nb then
+		return true
+	end
+	return string.lower(sa) == string.lower(sb)
+end
+
+function K.detachMoveAnimAnimatorHooks()
+	local m = ESP.moveAnim
+	for _, c in ipairs(m.animatorConns) do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	table.clear(m.animatorConns)
+	if m.animChildConn then
+		m.animChildConn:Disconnect()
+		m.animChildConn = nil
+	end
+	if m.charDescConn then
+		m.charDescConn:Disconnect()
+		m.charDescConn = nil
+	end
+	table.clear(m._hookedAnimators)
+end
+
+function K.hookSingleAnimator(animator)
+	local m = ESP.moveAnim
+	if not animator or not m.on or m._hookedAnimators[animator] then
+		return
+	end
+	local ok, conn = pcall(function()
+		return animator.AnimationPlayed:Connect(function(track)
+			if not m.on or flyOn or CC.freecamOn then
+				return
+			end
+			K.onMoveAnimTrackPlayed(track, animator)
+		end)
+	end)
+	if ok and conn then
+		m._hookedAnimators[animator] = true
+		table.insert(m.animatorConns, conn)
+	end
+end
+
+function K.attachMoveAnimAnimatorHooks()
+	K.detachMoveAnimAnimatorHooks()
+	if not ESP.moveAnim.on then
+		return
+	end
+	local char = me.Character
+	local hum = K.getHumanoid()
+	if not char or not hum then
+		return
+	end
+	local function wireAllAnimators()
+		local a0 = hum:FindFirstChildOfClass("Animator")
+		if a0 then
+			K.hookSingleAnimator(a0)
+		end
+		for _, d in char:GetDescendants() do
+			if d:IsA("Animator") then
+				K.hookSingleAnimator(d)
+			end
+		end
+	end
+	wireAllAnimators()
+	ESP.moveAnim.animChildConn = hum.ChildAdded:Connect(function(ch)
+		if ch:IsA("Animator") and ESP.moveAnim.on then
+			K.hookSingleAnimator(ch)
+		end
+	end)
+	ESP.moveAnim.charDescConn = char.DescendantAdded:Connect(function(d)
+		if d:IsA("Animator") and ESP.moveAnim.on then
+			K.hookSingleAnimator(d)
+		end
+	end)
+end
+
+function K.onMoveAnimTrackPlayed(track, animator)
+	local m = ESP.moveAnim
+	if not m.on or flyOn or CC.freecamOn then
+		return
+	end
+	local hum = K.getHumanoid()
+	if not hum or hum.Health <= 0 or not track then
+		return
+	end
+	local anim = track.Animation
+	if not anim then
+		return
+	end
+	local curId = anim.AnimationId or ""
+	local hay = K.moveAnimBuildHaystack(anim)
+	for si = 1, 4 do
+		local repl = m.slotReplaceId[si]
+		if repl ~= "" then
+			if K.moveAnimIdsMatch(curId, repl) then
+				return
+			end
+			local rawPat = m.slotPattern[si]
+			local pat = type(rawPat) == "string" and string.lower(rawPat) or ""
+			pat = pat:gsub("^%s+", ""):gsub("%s+$", "")
+			if pat ~= "" and string.find(hay, pat, 1, true) then
+				pcall(function()
+					track:Stop(0)
+				end)
+				task.defer(function()
+					if m.on and animator and animator.Parent then
+						K.playMoveAnimReplacement(animator, repl)
+					end
+				end)
+				return
+			end
+		end
+	end
+end
+
+function K.stopMoveAnimOverride()
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_MoveAnimOv")
+	end)
+	K.detachMoveAnimAnimatorHooks()
+	if ESP.moveAnim.conn then
+		ESP.moveAnim.conn:Disconnect()
+		ESP.moveAnim.conn = nil
+	end
+	if ESP.moveAnim.activeReplaceTrack then
+		pcall(function()
+			ESP.moveAnim.activeReplaceTrack:Stop(0.1)
+		end)
+		ESP.moveAnim.activeReplaceTrack = nil
+	end
+	if ESP.moveAnim.marked then
+		table.clear(ESP.moveAnim.marked)
+	end
+end
+
+function K.playMoveAnimReplacement(animator, animId)
+	if not animator or type(animId) ~= "string" or animId == "" then
+		return
+	end
+	if ESP.moveAnim.activeReplaceTrack then
+		pcall(function()
+			ESP.moveAnim.activeReplaceTrack:Stop(0.08)
+		end)
+		ESP.moveAnim.activeReplaceTrack = nil
+	end
+	local a = Instance.new("Animation")
+	a.AnimationId = animId
+	local ok, track = pcall(function()
+		return animator:LoadAnimation(a)
+	end)
+	a:Destroy()
+	if not ok or not track then
+		warn("[TesterToolkit] Move anim override: LoadAnimation failed (invalid id, private asset, or animator error).")
+		return
+	end
+	track.Priority = Enum.AnimationPriority.Action4
+	track.Looped = false
+	pcall(function()
+		track:Play(0.05, 1, 1)
+	end)
+	ESP.moveAnim.activeReplaceTrack = track
+	track.Stopped:Connect(function()
+		if ESP.moveAnim.activeReplaceTrack == track then
+			ESP.moveAnim.activeReplaceTrack = nil
+		end
+	end)
+end
+
+function K.moveAnimOverrideStep()
+	if not ESP.moveAnim.on then
+		return
+	end
+	if flyOn or CC.freecamOn then
+		return
+	end
+	local hum = K.getHumanoid()
+	if not hum or hum.Health <= 0 then
+		return
+	end
+	local char = me.Character
+	if not char then
+		return
+	end
+	local m = ESP.moveAnim
+	local function processAnimator(animator)
+		if not animator then
+			return
+		end
+		local tracks = animator:GetPlayingAnimationTracks()
+		for _, tr in ipairs(tracks) do
+			if tr.IsPlaying then
+				local an = tr.Animation
+				if an then
+					local hay = K.moveAnimBuildHaystack(an)
+					for si = 1, 4 do
+						local repl = m.slotReplaceId[si]
+						if repl ~= "" then
+							if K.moveAnimIdsMatch(an.AnimationId or "", repl) then
+								break
+							end
+							local rawPat = m.slotPattern[si]
+							local pat = type(rawPat) == "string" and string.lower(rawPat) or ""
+							pat = pat:gsub("^%s+", ""):gsub("%s+$", "")
+							if pat ~= "" and string.find(hay, pat, 1, true) then
+								if not m.marked[tr] then
+									m.marked[tr] = true
+									pcall(function()
+										tr.Stopped:Connect(function()
+											m.marked[tr] = nil
+										end)
+									end)
+									pcall(function()
+										tr:Stop(0)
+									end)
+									task.defer(function()
+										if m.on and animator and animator.Parent then
+											K.playMoveAnimReplacement(animator, repl)
+										end
+									end)
+								end
+								break
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	local humAnim = hum:FindFirstChildOfClass("Animator")
+	if not humAnim then
+		humAnim = Instance.new("Animator")
+		humAnim.Parent = hum
+	end
+	processAnimator(humAnim)
+	for _, d in char:GetDescendants() do
+		if d:IsA("Animator") then
+			processAnimator(d)
+		end
+	end
+end
+
+function K.setMoveAnimOverrideRunning()
+	if ESP.moveAnim.on then
+		K.stopMoveAnimOverride()
+		K.attachMoveAnimAnimatorHooks()
+		if #ESP.moveAnim.animatorConns == 0 then
+			local stepName = MENU_NAME .. "_MoveAnimOv"
+			local bound = pcall(function()
+				RunService:BindToRenderStep(stepName, Enum.RenderPriority.Last.Value, K.moveAnimOverrideStep)
+			end)
+			if not bound then
+				bound = pcall(function()
+					RunService:BindToRenderStep(stepName, RENDER_LAST, K.moveAnimOverrideStep)
+				end)
+			end
+			if not bound then
+				ESP.moveAnim.conn = RunService.Heartbeat:Connect(K.moveAnimOverrideStep)
+			end
+		end
+	else
+		K.stopMoveAnimOverride()
+	end
+	if ESP.moveAnim.toggleBtn then
+		ESP.moveAnim.toggleBtn.Text = ESP.moveAnim.on and "Move anim override: on" or "Move anim override: off"
+	end
+end
+
+function K.animBlockShouldAllow(track)
+	if not track then
+		return true
+	end
+	if animPlayingTrack == track then
+		return true
+	end
+	if CC.animSlideTrack == track then
+		return true
+	end
+	if ESP.moveAnim.activeReplaceTrack == track then
+		return true
+	end
+	return false
+end
+
+function K.detachAnimBlockHooks()
+	local b = ESP.animBlock
+	for _, c in ipairs(b.animatorConns) do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	table.clear(b.animatorConns)
+	if b.animChildConn then
+		b.animChildConn:Disconnect()
+		b.animChildConn = nil
+	end
+	if b.charDescConn then
+		b.charDescConn:Disconnect()
+		b.charDescConn = nil
+	end
+	table.clear(b._hookedAnimators)
+end
+
+function K.hookSingleAnimatorForBlock(animator)
+	local b = ESP.animBlock
+	if not animator or not b.on or b._hookedAnimators[animator] then
+		return
+	end
+	local ok, conn = pcall(function()
+		return animator.AnimationPlayed:Connect(function(track)
+			if not b.on or flyOn or CC.freecamOn then
+				return
+			end
+			if K.animBlockShouldAllow(track) then
+				return
+			end
+			pcall(function()
+				track:Stop(0)
+			end)
+		end)
+	end)
+	if ok and conn then
+		b._hookedAnimators[animator] = true
+		table.insert(b.animatorConns, conn)
+	end
+end
+
+function K.attachAnimBlockHooks()
+	K.detachAnimBlockHooks()
+	if not ESP.animBlock.on then
+		return
+	end
+	local char = me.Character
+	local hum = K.getHumanoid()
+	if not char or not hum then
+		return
+	end
+	local function wireAll()
+		local a0 = hum:FindFirstChildOfClass("Animator")
+		if a0 then
+			K.hookSingleAnimatorForBlock(a0)
+		end
+		for _, d in char:GetDescendants() do
+			if d:IsA("Animator") then
+				K.hookSingleAnimatorForBlock(d)
+			end
+		end
+	end
+	wireAll()
+	ESP.animBlock.animChildConn = hum.ChildAdded:Connect(function(ch)
+		if ch:IsA("Animator") and ESP.animBlock.on then
+			K.hookSingleAnimatorForBlock(ch)
+		end
+	end)
+	ESP.animBlock.charDescConn = char.DescendantAdded:Connect(function(d)
+		if d:IsA("Animator") and ESP.animBlock.on then
+			K.hookSingleAnimatorForBlock(d)
+		end
+	end)
+end
+
+function K.animBlockStep()
+	if not ESP.animBlock.on then
+		return
+	end
+	if flyOn or CC.freecamOn then
+		return
+	end
+	local char = me.Character
+	local hum = K.getHumanoid()
+	if not char or not hum or hum.Health <= 0 then
+		return
+	end
+	local function sweep(animator)
+		if not animator then
+			return
+		end
+		for _, tr in ipairs(animator:GetPlayingAnimationTracks()) do
+			if tr.IsPlaying and not K.animBlockShouldAllow(tr) then
+				pcall(function()
+					tr:Stop(0)
+				end)
+			end
+		end
+	end
+	local humAnim = hum:FindFirstChildOfClass("Animator")
+	if humAnim then
+		sweep(humAnim)
+	end
+	for _, d in char:GetDescendants() do
+		if d:IsA("Animator") then
+			sweep(d)
+		end
+	end
+end
+
+function K.stopAnimBlock()
+	if ESP.animBlock.conn then
+		ESP.animBlock.conn:Disconnect()
+		ESP.animBlock.conn = nil
+	end
+	K.detachAnimBlockHooks()
+end
+
+function K.setAnimBlockRunning()
+	if ESP.animBlock.on then
+		K.stopAnimBlock()
+		K.attachAnimBlockHooks()
+		ESP.animBlock.conn = RunService.Heartbeat:Connect(K.animBlockStep)
+	else
+		K.stopAnimBlock()
+	end
+	if ESP.animBlock.toggleBtn then
+		ESP.animBlock.toggleBtn.Text = ESP.animBlock.on and "Animation blocker: on" or "Animation blocker: off"
+	end
 end
 
 -- ========= Combat tab: loop TP + orbit strafe + walk boost =========
@@ -3558,6 +4126,9 @@ function K.refreshMoveLabels()
 	if ESP.labels.move.noclip then
 		ESP.labels.move.noclip.Text = noclipOn and "Noclip: on" or "Noclip: off"
 	end
+	if ESP.labels.move.antiSlow then
+		ESP.labels.move.antiSlow.Text = ESP.antiSlownessOn and "Anti slowness: on" or "Anti slowness: off"
+	end
 	if ESP.labels.move.speed then
 		ESP.labels.move.speed.Text = "Loop-walk: " .. (loopWalkOn and "on" or "off") .. "  speed " .. tostring(math.floor(loopWalkSpeed))
 	end
@@ -5356,6 +5927,13 @@ function K.menuFillMoveTab(pageMove)
 		K.refreshMoveLabels()
 	end)
 
+	K.addSectionLabel(pageMove, "ANTI SLOWNESS")
+	ESP.labels.move.antiSlow = K.makeToggleButton(pageMove, "Anti slowness: off", function()
+		ESP.antiSlownessOn = not ESP.antiSlownessOn
+		K.setAntiSlownessRunning()
+		K.refreshMoveLabels()
+	end)
+
 	K.addSectionLabel(pageMove, "LOOP WALK")
 	local wsLbl = Instance.new("TextLabel")
 	wsLbl.BackgroundTransparency = 1
@@ -6991,6 +7569,104 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	animPlayingReadout.TextColor3 = COL.muted
 	animPlayingReadout.Text = "Playing tracks: (open Combat tab, pick player, tap Tracks)"
 	animPlayingReadout.Parent = pageCombat
+
+	K.addSectionLabel(pageCombat, "MOVE ANIM OVERRIDE (hotbar)")
+	local movNote = Instance.new("TextLabel")
+	movNote.BackgroundTransparency = 1
+	movNote.Font = Enum.Font.Gotham
+	movNote.TextSize = 10
+	movNote.TextXAlignment = Enum.TextXAlignment.Left
+	movNote.TextWrapped = true
+	movNote.TextColor3 = COL.muted
+	movNote.Text =
+		"Uses Animator.AnimationPlayed (fires when a move starts). Match text checks Animation name, full path, and rbxasset id — if defaults never fire, pick yourself as target, use a move, tap Tracks, then paste part of the id or path into the slot.\nBind = replacement from the scanner row above. Local visuals only; private animation assets may refuse to load."
+	movNote.Size = UDim2.new(1, 0, 0, 76)
+	movNote.Parent = pageCombat
+
+	ESP.moveAnim.toggleBtn = K.makeToggleButton(pageCombat, "Move anim override: off", function()
+		ESP.moveAnim.on = not ESP.moveAnim.on
+		K.setMoveAnimOverrideRunning()
+	end)
+
+	for si = 1, 4 do
+		local slotRow = Instance.new("Frame")
+		slotRow.BackgroundTransparency = 1
+		slotRow.Size = UDim2.new(1, 0, 0, UserInputService.TouchEnabled and 40 or 34)
+		slotRow.Parent = pageCombat
+		local slotLay = Instance.new("UIListLayout")
+		slotLay.FillDirection = Enum.FillDirection.Horizontal
+		slotLay.VerticalAlignment = Enum.VerticalAlignment.Center
+		slotLay.HorizontalAlignment = Enum.HorizontalAlignment.Left
+		slotLay.Padding = UDim.new(0, 6)
+		slotLay.Parent = slotRow
+
+		local idxLbl = Instance.new("TextLabel")
+		idxLbl.BackgroundTransparency = 1
+		idxLbl.Size = UDim2.new(0, 22, 0, 28)
+		idxLbl.Font = Enum.Font.GothamBold
+		idxLbl.TextSize = 12
+		idxLbl.TextXAlignment = Enum.TextXAlignment.Left
+		idxLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+		idxLbl.Text = tostring(si) .. "."
+		idxLbl.Parent = slotRow
+
+		local patBox = Instance.new("TextBox")
+		patBox.Size = UDim2.new(0, UserInputService.TouchEnabled and 150 or 128, 0, 28)
+		patBox.BackgroundColor3 = COL.inputBg
+		patBox.TextColor3 = Color3.new(1, 1, 1)
+		patBox.Font = Enum.Font.Gotham
+		patBox.TextSize = UserInputService.TouchEnabled and 12 or 11
+		patBox.Text = ESP.moveAnim.slotPattern[si]
+		patBox.ClearTextOnFocus = false
+		patBox.Parent = slotRow
+		K.roundCorners(patBox, 5)
+		patBox:GetPropertyChangedSignal("Text"):Connect(function()
+			ESP.moveAnim.slotPattern[si] = patBox.Text
+		end)
+
+		local bindBtn = Instance.new("TextButton")
+		bindBtn.Size = UDim2.new(0, 52, 0, 28)
+		bindBtn.Font = Enum.Font.GothamBold
+		bindBtn.TextSize = 11
+		bindBtn.TextColor3 = Color3.new(1, 1, 1)
+		bindBtn.BackgroundColor3 = COL.btn
+		bindBtn.BorderSizePixel = 0
+		bindBtn.Text = "Bind"
+		bindBtn.Parent = slotRow
+		K.roundCorners(bindBtn, 5)
+		bindBtn.MouseButton1Click:Connect(function()
+			K.bindFinderAnimToMoveSlot(si)
+		end)
+
+		local idLbl = Instance.new("TextLabel")
+		idLbl.BackgroundTransparency = 1
+		idLbl.Size = UDim2.new(0, UserInputService.TouchEnabled and 200 or 168, 0, 28)
+		idLbl.Font = Enum.Font.Gotham
+		idLbl.TextSize = 10
+		idLbl.TextXAlignment = Enum.TextXAlignment.Left
+		idLbl.TextColor3 = COL.muted
+		idLbl.Text = "→ (pick row in scanner, Bind)"
+		idLbl.Parent = slotRow
+		ESP.moveAnim.replaceLbl[si] = idLbl
+	end
+	K.refreshMoveAnimOverrideLabels()
+
+	K.addSectionLabel(pageCombat, "ANIMATION BLOCKER")
+	local abNote = Instance.new("TextLabel")
+	abNote.BackgroundTransparency = 1
+	abNote.Font = Enum.Font.Gotham
+	abNote.TextSize = 10
+	abNote.TextXAlignment = Enum.TextXAlignment.Left
+	abNote.TextWrapped = true
+	abNote.TextColor3 = COL.muted
+	abNote.Text =
+		"Stops animation tracks on your character as soon as they start (local). Still allows: Combat preview, Create-tab anim slide, and move-anim replacement track. Expect T-pose / frozen pose if the game relies on Animate. Off while testing other anim tools if they look broken."
+	abNote.Size = UDim2.new(1, 0, 0, 52)
+	abNote.Parent = pageCombat
+	ESP.animBlock.toggleBtn = K.makeToggleButton(pageCombat, "Animation blocker: off", function()
+		ESP.animBlock.on = not ESP.animBlock.on
+		K.setAnimBlockRunning()
+	end)
 end
 
 function K.menuFillCombatTab(pageCombat)
@@ -8868,6 +9544,7 @@ me.CharacterAdded:Connect(function(char)
 	K.stopAllMacroPlayback()
 	CC.cleanupOnRespawn()
 	K.stopPreviewTrack()
+	K.stopMoveAnimOverride()
 	local hum = char:WaitForChild("Humanoid", 15)
 	char:WaitForChild("HumanoidRootPart", 15)
 	K.stopAllMacroPlayback()
@@ -8888,6 +9565,15 @@ me.CharacterAdded:Connect(function(char)
 	end
 	if loopWalkOn then
 		K.setLoopWalkRunning()
+	end
+	if ESP.antiSlownessOn then
+		K.setAntiSlownessRunning()
+	end
+	if ESP.moveAnim.on then
+		K.setMoveAnimOverrideRunning()
+	end
+	if ESP.animBlock.on then
+		K.setAnimBlockRunning()
 	end
 	loopTpOn = false
 	K.stopLoopTp()
