@@ -53,6 +53,7 @@ local glowListener = nil
 local flyOn = false
 local noclipOn = false
 local flyConn = nil
+local flyPostConn = nil
 local noclipConn = nil
 local flySpeed = 85
 local loopWalkOn = false
@@ -195,15 +196,19 @@ local ESP = {
 	opAimLineFrame = nil,
 	opConn = nil,
 	opHitboxTargetOnlyOn = false,
-	opFaceLockKey = Enum.KeyCode.G,
+	opFaceLockKey = Enum.KeyCode.C,
 	opFaceKeyListen = false,
 	opFaceKeybindBtn = nil,
+	opFaceLockBtn = nil,
 	opCameraLockOn = false,
 	opCameraLockSavedType = nil,
 	opCameraLockSavedSubject = nil,
 	opCameraLockBack = 10,
 	opCameraLockUp = 2.5,
 	opCameraLockBtn = nil,
+	opCamLockSmoothCf = nil,
+	opCamLockLastTgtUid = nil,
+	opCamLockLastStepT = nil,
 	opBhopOn = false,
 	opSpinOn = false,
 	opSpinSpeed = 260,
@@ -241,7 +246,7 @@ local ESP = {
 	menuShowClose = true,
 	menuTabTextSize = 10,
 	menuHideTabScrollbar = false,
-	menuAlwaysTop = false,
+	menuAlwaysTop = true,
 	mobileQuickButtonsOn = true,
 	flyTouchUp = false,
 	flyTouchDown = false,
@@ -870,6 +875,10 @@ function K.stopFly()
 		flyConn:Disconnect()
 		flyConn = nil
 	end
+	if flyPostConn then
+		flyPostConn:Disconnect()
+		flyPostConn = nil
+	end
 	ESP.flyTouchUp = false
 	ESP.flyTouchDown = false
 	ESP.flyTouchMoveHeld = false
@@ -901,9 +910,6 @@ function K.startFly()
 		-- Always PlatformStand while flying: on touch, false let Humanoid gravity/floor logic fight velocity and you sink.
 		hum.PlatformStand = true
 		hum.AutoRotate = false
-		pcall(function()
-			hum:ChangeState(Enum.HumanoidStateType.Flying)
-		end)
 		if flyHoldY == nil then
 			flyHoldY = root.Position.Y
 		end
@@ -992,6 +998,33 @@ function K.startFly()
 		root.AssemblyAngularVelocity = Vector3.zero
 		root.CFrame = CFrame.lookAt(root.Position, root.Position + look)
 	end)
+	local function flyKillGravitySink()
+		if not flyOn or not UserInputService.TouchEnabled then
+			return
+		end
+		local char = me.Character
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		if not root then
+			return
+		end
+		-- Mobile: DN quick button / Ctrl only (not C — conflicts with face-lock default on phone+keyboard).
+		local downIntent = ESP.flyTouchDown or UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+		if downIntent then
+			return
+		end
+		local v = root.AssemblyLinearVelocity
+		if v.Y < -0.02 then
+			root.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
+		end
+	end
+	local okPs, postSim = pcall(function()
+		return RunService.PostSimulation
+	end)
+	if okPs and postSim then
+		flyPostConn = postSim:Connect(flyKillGravitySink)
+	else
+		flyPostConn = RunService.Heartbeat:Connect(flyKillGravitySink)
+	end
 end
 
 function K.setFlyRunning()
@@ -2298,12 +2331,9 @@ function K.opCombatHeartbeat()
 	local cam = K.getCam()
 	local hum = K.getHumanoid()
 
-	if ESP.opFaceLockOn and myRoot and head then
-		-- Rotate only: avoids "position teleport" while still feeling like a lock-on.
-		myRoot.CFrame = CFrame.new(myRoot.Position, head.Position)
-	end
+	-- Face-lock rotation runs in cameraLockStep (same frame, late priority) when camera lock is on; avoids fighting the scriptable camera and reduces shake.
 
-	if ESP.opSpinOn and myRoot then
+	if ESP.opSpinOn and myRoot and not ESP.opCameraLockOn then
 		local cf = myRoot.CFrame
 		local yaw = math.rad(ESP.opSpinSpeed / 60)
 		myRoot.CFrame = cf * CFrame.Angles(0, yaw, 0)
@@ -2351,9 +2381,12 @@ function K.stopCameraLock()
 	end
 	ESP.opCameraLockSavedType = nil
 	ESP.opCameraLockSavedSubject = nil
+	ESP.opCamLockSmoothCf = nil
+	ESP.opCamLockLastTgtUid = nil
+	ESP.opCamLockLastStepT = nil
 end
 
-function K.cameraLockStep()
+function K.cameraLockStep(now)
 	if not ESP.opCameraLockOn then
 		return
 	end
@@ -2364,11 +2397,45 @@ function K.cameraLockStep()
 	if not head or not myRoot or not cam then
 		return
 	end
+	local uid = plr.UserId
+	if ESP.opCamLockLastTgtUid ~= uid then
+		ESP.opCamLockLastTgtUid = uid
+		ESP.opCamLockSmoothCf = nil
+		ESP.opCamLockLastStepT = nil
+	end
+	local prevT = ESP.opCamLockLastStepT
+	ESP.opCamLockLastStepT = now
+	local dt = prevT and math.clamp(now - prevT, 0.008, 0.12) or (1 / 60)
+	local headPos = head.Position
+	if ESP.opFaceLockOn then
+		myRoot.CFrame = CFrame.new(myRoot.Position, headPos)
+	end
+	if ESP.opSpinOn and myRoot then
+		local cfSpin = myRoot.CFrame
+		myRoot.CFrame = cfSpin * CFrame.Angles(0, math.rad(ESP.opSpinSpeed / 60), 0)
+	end
 	local back = ESP.opCameraLockBack or 10
 	local up = ESP.opCameraLockUp or 2.5
 	local cf = myRoot.CFrame
 	local camPos = cf.Position - cf.LookVector * back + Vector3.new(0, up, 0)
-	cam.CFrame = CFrame.lookAt(camPos, head.Position)
+	local smoothLook = headPos
+	local prevCf = ESP.opCamLockSmoothCf
+	if prevCf then
+		local prevLook = prevCf.Position + prevCf.LookVector * 80
+		if (headPos - prevLook).Magnitude > 45 then
+			smoothLook = headPos
+			prevCf = nil
+			ESP.opCamLockSmoothCf = nil
+		else
+			smoothLook = prevLook:Lerp(headPos, math.clamp(dt * 18, 0.12, 0.55))
+		end
+	end
+	local targetCf = CFrame.lookAt(camPos, smoothLook)
+	if prevCf then
+		targetCf = prevCf:Lerp(targetCf, math.clamp(dt * 11, 0.15, 0.5))
+	end
+	ESP.opCamLockSmoothCf = targetCf
+	cam.CFrame = targetCf
 end
 
 function K.setCameraLockRunning()
@@ -2384,14 +2451,36 @@ function K.setCameraLockRunning()
 		pcall(function()
 			RunService:UnbindFromRenderStep(MENU_NAME .. "_CamLock")
 		end)
-		RunService:BindToRenderStep(MENU_NAME .. "_CamLock", Enum.RenderPriority.Camera.Value, K.cameraLockStep)
+		-- After default camera work; keeps HRP/face-lock and scriptable cam in one late pass (reduces jitter vs RenderStepped).
+		RunService:BindToRenderStep(MENU_NAME .. "_CamLock", 2147483644, K.cameraLockStep)
 	else
 		K.stopCameraLock()
 	end
 end
 
+function K.setFaceCameraLockBoth(isOn)
+	ESP.opFaceLockOn = isOn
+	ESP.opCameraLockOn = isOn
+	K.setCameraLockRunning()
+	K.setOpCombatRunning()
+	K.refreshFaceCameraLockUi()
+end
+
+function K.toggleFaceCameraLock()
+	K.setFaceCameraLockBoth(not ESP.opFaceLockOn)
+end
+
+function K.refreshFaceCameraLockUi()
+	if ESP.opFaceLockBtn then
+		ESP.opFaceLockBtn.Text = ESP.opFaceLockOn and "Face-lock to target: on" or "Face-lock to target: off"
+	end
+	if ESP.opCameraLockBtn then
+		ESP.opCameraLockBtn.Text = ESP.opCameraLockOn and "Camera lock to target: on" or "Camera lock to target: off"
+	end
+end
+
 function K.setOpCombatRunning()
-	local want = ESP.opFaceLockOn or ESP.opAimLineOn or ESP.opBhopOn or ESP.opSpinOn
+	local want = ESP.opAimLineOn or ESP.opBhopOn or ESP.opSpinOn
 	if want then
 		if not ESP.opConn then
 			ESP.opConn = RunService.RenderStepped:Connect(K.opCombatHeartbeat)
@@ -2408,10 +2497,10 @@ function K.setOpCombatRunning()
 end
 
 function K.refreshOpCombatUi()
-	local btn = ESP.opFaceKeybindBtn
-	if btn then
-		local extra = ESP.opFaceKeyListen and "  (press a key... Esc=cancel)" or ""
-		btn.Text = "Face-lock key: " .. ESP.opFaceLockKey.Name .. " (click to change)" .. extra
+	local extra = ESP.opFaceKeyListen and "  (press a key… Esc=cancel)" or ""
+	local txt = "Face-lock + camera lock key: " .. ESP.opFaceLockKey.Name .. " (click to change)" .. extra
+	if ESP.opFaceKeybindBtn then
+		ESP.opFaceKeybindBtn.Text = txt
 	end
 end
 
@@ -3037,8 +3126,7 @@ function K.buildMobileQuickButtons(screen)
 		CC.stopAnimSlide()
 	end)
 	addMiniButton("FACE", function()
-		ESP.opFaceLockOn = not ESP.opFaceLockOn
-		K.setOpCombatRunning()
+		K.toggleFaceCameraLock()
 		K.refreshOpCombatUi()
 	end)
 	mobileQuickFrame = host
@@ -4207,8 +4295,11 @@ function CC.startFreecam()
 		CC.stopFreecam()
 		return
 	end
+	ESP.opFaceLockOn = false
 	ESP.opCameraLockOn = false
 	K.stopCameraLock()
+	K.setOpCombatRunning()
+	K.refreshFaceCameraLockUi()
 	CC.stopOrbit()
 	local cam = Workspace.CurrentCamera
 	if not cam then
@@ -4312,8 +4403,11 @@ function CC.startOrbit()
 		CC.stopOrbit()
 		return
 	end
+	ESP.opFaceLockOn = false
 	ESP.opCameraLockOn = false
 	K.stopCameraLock()
+	K.setOpCombatRunning()
+	K.refreshFaceCameraLockUi()
 	CC.stopFreecam()
 	local cam = Workspace.CurrentCamera
 	if not cam then
@@ -5111,7 +5205,7 @@ function K.menuFillMoveTab(pageMove)
 	flyLbl.TextWrapped = true
 	flyLbl.TextColor3 = COL.muted
 	flyLbl.Text =
-		"Camera-relative: W/S along look, A/D strafe, Space/Ctrl world up/down. Touch: stick is horizontal-only + movement latch (reduces dip); UP/DN on quick bar for vertical. Hotkey toggles fly (see below)."
+		"Camera-relative: W/S along look, A/D strafe, Space/Ctrl/C world up/down (PC). Touch: stick horizontal + latch; UP/DN on quick bar for vertical (Ctrl also down). Post-physics pass removes gravity sink on touch."
 	flyLbl.Size = UDim2.new(1, 0, 0, 44)
 	flyLbl.Parent = pageMove
 	ESP.labels.move.fly = K.makeToggleButton(pageMove, "Flying: off", function()
@@ -7282,15 +7376,26 @@ function K.menuFillCombatTab(pageCombat)
 	task.defer(K.setAutoForceTpRunning)
 
 	K.addSectionLabel(pageCombat, "OP COMBAT (LOCAL)")
-	K.makeToggleButton(pageCombat, "Face-lock to target: off", function(btn)
-		ESP.opFaceLockOn = not ESP.opFaceLockOn
-		btn.Text = ESP.opFaceLockOn and "Face-lock to target: on" or "Face-lock to target: off"
-		K.setOpCombatRunning()
+	ESP.opFaceLockBtn = K.makeToggleButton(pageCombat, "Face-lock to target: off", function()
+		K.toggleFaceCameraLock()
 	end)
-	ESP.opCameraLockBtn = K.makeToggleButton(pageCombat, "Camera lock to target: off", function(btn)
-		ESP.opCameraLockOn = not ESP.opCameraLockOn
-		btn.Text = ESP.opCameraLockOn and "Camera lock to target: on" or "Camera lock to target: off"
-		K.setCameraLockRunning()
+	local faceKeyNote = Instance.new("TextLabel")
+	faceKeyNote.BackgroundTransparency = 1
+	faceKeyNote.Font = Enum.Font.Gotham
+	faceKeyNote.TextSize = 10
+	faceKeyNote.TextXAlignment = Enum.TextXAlignment.Left
+	faceKeyNote.TextWrapped = true
+	faceKeyNote.TextColor3 = COL.muted
+	faceKeyNote.Text =
+		"PC: the bound key toggles face-lock and camera lock together. Click the row below to change the key (Esc cancels)."
+	faceKeyNote.Size = UDim2.new(1, 0, 0, 28)
+	faceKeyNote.Parent = pageCombat
+	ESP.opFaceKeybindBtn = K.makeToggleButton(pageCombat, "", function()
+		ESP.opFaceKeyListen = not ESP.opFaceKeyListen
+		K.refreshOpCombatUi()
+	end)
+	ESP.opCameraLockBtn = K.makeToggleButton(pageCombat, "Camera lock to target: off", function()
+		K.toggleFaceCameraLock()
 	end)
 	local camLockNote = Instance.new("TextLabel")
 	camLockNote.BackgroundTransparency = 1
@@ -7300,13 +7405,9 @@ function K.menuFillCombatTab(pageCombat)
 	camLockNote.TextWrapped = true
 	camLockNote.TextColor3 = COL.muted
 	camLockNote.Text =
-		"Camera lock: Scriptable cam behind you, looks at the picked target (priority: loop TP → strafe → ESP target → Target tab). Turn off before freecam/orbit."
+		"Camera lock: same toggle as face-lock — scriptable cam behind you, smoothed look-at. Same target priority as face-lock. Turn off before freecam/orbit."
 	camLockNote.Size = UDim2.new(1, 0, 0, 36)
 	camLockNote.Parent = pageCombat
-	ESP.opFaceKeybindBtn = K.makeToggleButton(pageCombat, "Face-lock key: " .. ESP.opFaceLockKey.Name .. " (click to change)", function()
-		ESP.opFaceKeyListen = true
-		K.refreshOpCombatUi()
-	end)
 	K.makeToggleButton(pageCombat, "Aim-line overlay: off", function(btn)
 		ESP.opAimLineOn = not ESP.opAimLineOn
 		if ESP.opAimLineOn then
@@ -7821,7 +7922,7 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		btn.Text = ESP.menuHideTabScrollbar and "Hide tab scrollbar: on" or "Hide tab scrollbar: off"
 	end)
 	hideScrollBtn.Text = ESP.menuHideTabScrollbar and "Hide tab scrollbar: on" or "Hide tab scrollbar: off"
-	local topBtn = K.makeToggleButton(pageCustom, "Menu always on top: off", function(btn)
+	local topBtn = K.makeToggleButton(pageCustom, "Menu always on top: on", function(btn)
 		ESP.menuAlwaysTop = not ESP.menuAlwaysTop
 		applyMenuVisuals()
 		btn.Text = ESP.menuAlwaysTop and "Menu always on top: on" or "Menu always on top: off"
@@ -7873,7 +7974,7 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		ESP.menuShowClose = true
 		ESP.menuTabTextSize = 10
 		ESP.menuHideTabScrollbar = false
-		ESP.menuAlwaysTop = false
+		ESP.menuAlwaysTop = true
 		ESP.mobileQuickButtonsOn = true
 		MENU_CFG.panel = { 18, 18, 18 }
 		MENU_CFG.top = { 30, 30, 30 }
@@ -7900,7 +8001,7 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		subtitleBtn.Text = "Show subtitle: on"
 		closeBtnTog.Text = "Show close button: on"
 		hideScrollBtn.Text = "Hide tab scrollbar: off"
-		topBtn.Text = "Menu always on top: off"
+		topBtn.Text = "Menu always on top: on"
 		rainbowBtn.Text = "Rainbow border: off"
 		mobileQuickBtn.Text = "Mobile quick buttons: on"
 		if mobileQuickFrame and mobileQuickFrame.Parent then
@@ -8289,8 +8390,8 @@ function K.buildMenu()
 	local tabCombatBtn = makeNavTab("Combat", 6)
 	local tabCreateBtn = makeNavTab("Create", 7)
 	local tabMacroBtn = makeNavTab("Macro", 8)
-	local tabAboutBtn = makeNavTab("About", 9)
-	local tabCustomBtn = makeNavTab("Customize", 10)
+	local tabCustomBtn = makeNavTab("Customize", 9)
+	local tabAboutBtn = makeNavTab("About", 10)
 
 	menuRefs.topBar = topBar
 	menuRefs.title = title
@@ -8308,8 +8409,8 @@ function K.buildMenu()
 		tabCombatBtn,
 		tabCreateBtn,
 		tabMacroBtn,
-		tabAboutBtn,
 		tabCustomBtn,
+		tabAboutBtn,
 	}
 
 	local function switchTab(which)
@@ -8332,8 +8433,8 @@ function K.buildMenu()
 		tabStyle(tabCombatBtn, which == "combat")
 		tabStyle(tabMacroBtn, which == "macro")
 		tabStyle(tabCreateBtn, which == "create")
-		tabStyle(tabAboutBtn, which == "about")
 		tabStyle(tabCustomBtn, which == "custom")
+		tabStyle(tabAboutBtn, which == "about")
 	end
 
 	tabAntiBtn.MouseButton1Click:Connect(function()
@@ -8366,11 +8467,11 @@ function K.buildMenu()
 		switchTab("macro")
 		K.rebuildMacroList()
 	end)
-	tabAboutBtn.MouseButton1Click:Connect(function()
-		switchTab("about")
-	end)
 	tabCustomBtn.MouseButton1Click:Connect(function()
 		switchTab("custom")
+	end)
+	tabAboutBtn.MouseButton1Click:Connect(function()
+		switchTab("about")
 	end)
 	switchTab("anti")
 
@@ -8411,7 +8512,7 @@ function K.buildMenu()
 	about2.TextWrapped = true
 	about2.TextColor3 = Color3.fromRGB(200, 205, 220)
 	about2.Text =
-		"Move, World, Client, Target, Combat, Create, Macro — local tools. Target = pick a player, fly-toward with optional ray dodge, or TP beside them. Create = fling, anim slide, freecam, orbit. Other players’ physics are usually server-owned."
+		"Move, World, Client, Target, Combat, Create, Macro, Customize — local tools; Customize = theme, layout, always-on-top. Target = pick a player, fly-toward with optional ray dodge, or TP beside them. Create = fling, anim slide, freecam, orbit. Other players’ physics are usually server-owned."
 	about2.Size = UDim2.new(1, 0, 0, 48)
 	about2.Parent = pageAbout
 
@@ -8550,8 +8651,8 @@ UserInputService.InputBegan:Connect(function(input, gameUsedIt)
 		return
 	end
 	if input.KeyCode == ESP.opFaceLockKey then
-		ESP.opFaceLockOn = not ESP.opFaceLockOn
-		K.setOpCombatRunning()
+		K.toggleFaceCameraLock()
+		return
 	end
 end)
 
@@ -8590,9 +8691,7 @@ me.CharacterAdded:Connect(function(char)
 	ESP.opFaceLockOn = false
 	ESP.opCameraLockOn = false
 	K.stopCameraLock()
-	if ESP.opCameraLockBtn then
-		ESP.opCameraLockBtn.Text = "Camera lock to target: off"
-	end
+	K.refreshFaceCameraLockUi()
 	ESP.opAimLineOn = false
 	ESP.opBhopOn = false
 	ESP.opSpinOn = false
