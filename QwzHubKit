@@ -1,3 +1,10 @@
+--[[
+	Tester toolkit — client-side QA helpers.
+	Landscape menu (#121212 solid panels, green accents); desktop uses full width/height, touch devices auto-fit via UIScale only.
+	Place in StarterPlayer > StarterPlayerScripts.
+	− (minus) or keypad − = show/hide · header − button closes the panel.
+]]
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -3652,6 +3659,24 @@ function K.stopMacroPlayback(idx)
 	end
 end
 
+function K.stopAllMacroPlayback()
+	-- Respawns can leave old Heartbeat/task loops running; they will attach to the new character (via K.getRoot/getHumanoid).
+	for idx in pairs(Macro.moveConns) do
+		K.stopMacroPlayback(idx)
+	end
+	for idx in pairs(Macro.playConns) do
+		K.stopMacroPlayback(idx)
+	end
+	if Macro.sampleConn then
+		Macro.sampleConn:Disconnect()
+		Macro.sampleConn = nil
+	end
+	Macro.recording = false
+	Macro.recordStart = nil
+	Macro.hotkeyListen = false
+	Macro.hotkeyListenIndex = nil
+end
+
 function K.playMacro(idx)
 	local mac = Macro.list[idx]
 	if not mac or not mac.on or type(mac.inputs) ~= "table" or #mac.inputs == 0 then
@@ -3744,6 +3769,7 @@ function K.playMacro(idx)
 		selectToolSlot(slotIdx)
 	end
 	K.stopMacroPlayback(idx)
+	local charToken = me.Character
 	Macro.playConns[idx] = task.spawn(function()
 		local function stopMovePulse()
 			if Macro.moveConns[idx] then
@@ -3773,6 +3799,10 @@ function K.playMacro(idx)
 			end
 			dir = dir.Unit
 			Macro.moveConns[idx] = RunService.Heartbeat:Connect(function()
+				if me.Character ~= charToken then
+					stopMovePulse()
+					return
+				end
 				local h = K.getHumanoid()
 				local r = K.getRoot()
 				if not h or not r or h.Health <= 0 then
@@ -3789,6 +3819,9 @@ function K.playMacro(idx)
 		local inputs = mac.inputs
 		local n = #inputs
 		for i = 1, n do
+			if me.Character ~= charToken then
+				break
+			end
 			if not mac.on then
 				break
 			end
@@ -3797,6 +3830,9 @@ function K.playMacro(idx)
 			local slack = when - os.clock()
 			if slack > 0 then
 				task.wait(slack)
+			end
+			if me.Character ~= charToken then
+				break
 			end
 			if not mac.on then
 				break
@@ -3864,6 +3900,9 @@ function K.playMacro(idx)
 			end
 		end
 		stopMovePulse()
+		if Macro.playConns[idx] then
+			Macro.playConns[idx] = nil
+		end
 	end)
 end
 
@@ -8825,10 +8864,13 @@ UserInputService.InputBegan:Connect(function(input, gameUsedIt)
 end)
 
 me.CharacterAdded:Connect(function(char)
+	-- Hard stop any macro playback/movement pulses that would otherwise keep driving velocity after respawn.
+	K.stopAllMacroPlayback()
 	CC.cleanupOnRespawn()
 	K.stopPreviewTrack()
 	local hum = char:WaitForChild("Humanoid", 15)
 	char:WaitForChild("HumanoidRootPart", 15)
+	K.stopAllMacroPlayback()
 	savedPivot = nil
 	placeBeforePhysics = nil
 	if hum then
