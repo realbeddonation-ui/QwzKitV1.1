@@ -1,10 +1,3 @@
---[[
-	Tester toolkit — client-side QA helpers.
-	Landscape menu (#121212 solid panels, green accents); desktop uses full width/height, touch devices auto-fit via UIScale only.
-	Place in StarterPlayer > StarterPlayerScripts.
-	− (minus) or keypad − = show/hide · header − button closes the panel.
-]]
-
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -272,6 +265,14 @@ local ESP = {
 	targetKitSpeed = 58,
 	targetKitChasing = false,
 	targetKitSavedFlyOn = false,
+	targetKitElevatedChase = false,
+	targetKitElevStuds = 28,
+	targetKitElevKey = Enum.KeyCode.G,
+	targetKitElevKeyListen = false,
+	targetKitElevKeyBtn = nil,
+	targetKitElevBtn = nil,
+	mobileQuickOffX = -48,
+	mobileQuickOffY = 12,
 }
 
 -- ========= Macros =========
@@ -2817,12 +2818,18 @@ function K.targetKitStartNav()
 			end
 			return
 		end
-		local goal = tr.Position + Vector3.new(0, 1.5, 0)
+		local yGoal = 1.5 + (ESP.targetKitElevatedChase and ESP.targetKitElevStuds or 0)
+		local goal = tr.Position + Vector3.new(0, yGoal, 0)
 		local from = root.Position
+		local faceAim = tr.Position + Vector3.new(0, 1.35, 0)
 		local dist = (goal - from).Magnitude
 		if dist < 5 then
 			root.AssemblyLinearVelocity = Vector3.zero
 			root.AssemblyAngularVelocity = Vector3.zero
+			local toA = faceAim - from
+			if toA.Magnitude > 0.05 then
+				root.CFrame = CFrame.lookAt(from, faceAim)
+			end
 			if ESP.targetKitStatusLbl then
 				ESP.targetKitStatusLbl.Text = "Within range of " .. tpl2.Name .. " (~" .. string.format("%.0f", dist) .. " studs)."
 			end
@@ -2889,21 +2896,29 @@ function K.targetKitStartNav()
 		end
 		root.AssemblyLinearVelocity = steer * ESP.targetKitSpeed
 		root.AssemblyAngularVelocity = Vector3.zero
+		local pos = root.Position
+		local toA2 = faceAim - pos
+		if toA2.Magnitude > 0.05 then
+			root.CFrame = CFrame.lookAt(pos, faceAim)
+		end
 		if ESP.targetKitStatusLbl then
+			local hi = ESP.targetKitElevatedChase and string.format("above +%.0f", ESP.targetKitElevStuds) or "level"
 			if ESP.targetKitArcMode then
 				ESP.targetKitStatusLbl.Text = string.format(
-					"%s · %s · %.0f studs · arc on · avoid %s · spd %.0f",
+					"%s · %s · %.0f studs · %s · arc on · avoid %s · spd %.0f",
 					phaseTag,
 					tpl2.Name,
 					dist,
+					hi,
 					ESP.targetKitAvoid and "on" or "off",
 					ESP.targetKitSpeed
 				)
 			else
 				ESP.targetKitStatusLbl.Text = string.format(
-					"Chasing %s · %.0f studs · avoid %s · speed %.0f",
+					"Chasing %s · %.0f studs · %s · avoid %s · speed %.0f",
 					tpl2.Name,
 					dist,
+					hi,
 					ESP.targetKitAvoid and "on" or "off",
 					ESP.targetKitSpeed
 				)
@@ -2951,6 +2966,34 @@ function K.targetKitTeleportToPick()
 		ESP.targetKitStatusLbl.Text = "Teleported near " .. tpl.Name .. "."
 	end
 	return true
+end
+
+function K.syncMobileQuickFramePosition()
+	if not mobileQuickFrame or not mobileQuickFrame.Parent then
+		return
+	end
+	local inset = GuiService:GetGuiInset()
+	mobileQuickFrame.Position =
+		UDim2.new(1, ESP.mobileQuickOffX - inset.X, 0, ESP.mobileQuickOffY + inset.Y)
+end
+
+function K.syncTargetKitElevUi()
+	if ESP.targetKitElevBtn then
+		if ESP.targetKitElevatedChase then
+			ESP.targetKitElevBtn.Text = "Fly above target: on (+"
+				.. tostring(math.floor(ESP.targetKitElevStuds + 0.5))
+				.. " studs — tap or hotkey = level chase)"
+		else
+			ESP.targetKitElevBtn.Text = "Fly above target: off (tap or hotkey = fly higher over target)"
+		end
+	end
+	if ESP.targetKitElevKeyBtn then
+		local extra = ESP.targetKitElevKeyListen and "  (press a key… Esc=cancel)" or ""
+		ESP.targetKitElevKeyBtn.Text = "Chase height hotkey: "
+			.. ESP.targetKitElevKey.Name
+			.. " (level ↔ above; click to change)"
+			.. extra
+	end
 end
 
 function K.refreshTargetKitList()
@@ -3061,7 +3104,7 @@ function K.buildMobileQuickButtons(screen)
 	host.BackgroundTransparency = 1
 	host.BorderSizePixel = 0
 	host.Size = UDim2.fromOffset(38, 236)
-	host.Position = UDim2.new(1, -48 - inset.X, 0, 12 + inset.Y)
+	host.Position = UDim2.new(1, ESP.mobileQuickOffX - inset.X, 0, ESP.mobileQuickOffY + inset.Y)
 	host.ZIndex = 25
 	host.Visible = ESP.mobileQuickButtonsOn
 	host.Parent = screen
@@ -6435,6 +6478,80 @@ function K.menuFillTargetTab(pageTarget)
 	end)
 	spdLbl.Text = "Chase speed: " .. tostring(math.floor(ESP.targetKitSpeed + 0.5))
 
+	K.addSectionLabel(pageTarget, "CHASE HEIGHT (fly-toward)")
+	local elevNote = Instance.new("TextLabel")
+	elevNote.BackgroundTransparency = 1
+	elevNote.Font = Enum.Font.Gotham
+	elevNote.TextSize = 10
+	elevNote.TextXAlignment = Enum.TextXAlignment.Left
+	elevNote.TextWrapped = true
+	elevNote.TextColor3 = COL.muted
+	elevNote.Text =
+		"While fly-toward is running, use the toggle or hotkey to switch between level chase and hovering the set height above the target’s root."
+	elevNote.Size = UDim2.new(1, 0, 0, 36)
+	elevNote.Parent = pageTarget
+
+	ESP.targetKitElevBtn = K.makeToggleButton(pageTarget, "", function()
+		ESP.targetKitElevatedChase = not ESP.targetKitElevatedChase
+		K.syncTargetKitElevUi()
+	end)
+	local elevStudRow = Instance.new("Frame")
+	elevStudRow.BackgroundTransparency = 1
+	elevStudRow.Size = UDim2.new(1, 0, 0, 34)
+	elevStudRow.Parent = pageTarget
+	local elevStudLay = Instance.new("UIListLayout")
+	elevStudLay.FillDirection = Enum.FillDirection.Horizontal
+	elevStudLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	elevStudLay.Padding = UDim.new(0, 8)
+	elevStudLay.Parent = elevStudRow
+	local elevStudLbl = Instance.new("TextLabel")
+	elevStudLbl.BackgroundTransparency = 1
+	elevStudLbl.Size = UDim2.new(1, -100, 1, 0)
+	elevStudLbl.Font = Enum.Font.Gotham
+	elevStudLbl.TextSize = 11
+	elevStudLbl.TextXAlignment = Enum.TextXAlignment.Left
+	elevStudLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+	elevStudLbl.Parent = elevStudRow
+	local elevStudDown = Instance.new("TextButton")
+	elevStudDown.Text = "−"
+	elevStudDown.Size = UDim2.fromOffset(40, 32)
+	elevStudDown.Font = Enum.Font.GothamBold
+	elevStudDown.TextSize = 18
+	elevStudDown.TextColor3 = Color3.new(1, 1, 1)
+	elevStudDown.BackgroundColor3 = COL.btn
+	elevStudDown.BorderSizePixel = 0
+	elevStudDown.Parent = elevStudRow
+	elevStudDown:SetAttribute("KitStepBtn", true)
+	K.roundCorners(elevStudDown, 8)
+	elevStudDown.MouseButton1Click:Connect(function()
+		ESP.targetKitElevStuds = math.clamp(ESP.targetKitElevStuds - 4, 8, 120)
+		elevStudLbl.Text = "Height above target: " .. tostring(math.floor(ESP.targetKitElevStuds + 0.5)) .. " studs"
+		K.syncTargetKitElevUi()
+	end)
+	local elevStudUp = Instance.new("TextButton")
+	elevStudUp.Text = "+"
+	elevStudUp.Size = UDim2.fromOffset(40, 32)
+	elevStudUp.Font = Enum.Font.GothamBold
+	elevStudUp.TextSize = 18
+	elevStudUp.TextColor3 = Color3.new(1, 1, 1)
+	elevStudUp.BackgroundColor3 = COL.btn
+	elevStudUp.BorderSizePixel = 0
+	elevStudUp.Parent = elevStudRow
+	elevStudUp:SetAttribute("KitStepBtn", true)
+	K.roundCorners(elevStudUp, 8)
+	elevStudUp.MouseButton1Click:Connect(function()
+		ESP.targetKitElevStuds = math.clamp(ESP.targetKitElevStuds + 4, 8, 120)
+		elevStudLbl.Text = "Height above target: " .. tostring(math.floor(ESP.targetKitElevStuds + 0.5)) .. " studs"
+		K.syncTargetKitElevUi()
+	end)
+	elevStudLbl.Text = "Height above target: " .. tostring(math.floor(ESP.targetKitElevStuds + 0.5)) .. " studs"
+
+	ESP.targetKitElevKeyBtn = K.makeToggleButton(pageTarget, "", function()
+		ESP.targetKitElevKeyListen = not ESP.targetKitElevKeyListen
+		K.syncTargetKitElevUi()
+	end)
+	K.syncTargetKitElevUi()
+
 	ESP.targetKitMoveBtn = K.makeToggleButton(pageTarget, "Fly toward target: off", function(btn)
 		if ESP.targetKitChasing then
 			K.targetKitStopNav()
@@ -7958,6 +8075,41 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 	mobileQuickBtn.Text = ESP.mobileQuickButtonsOn and "Mobile quick buttons: on" or "Mobile quick buttons: off"
 	mobileQuickBtn.BackgroundColor3 = COL.btn
 
+	K.addSectionLabel(pageCustom, "MOBILE QUICK BAR (touch only)")
+	local mqHint = Instance.new("TextLabel")
+	mqHint.BackgroundTransparency = 1
+	mqHint.Font = Enum.Font.Gotham
+	mqHint.TextSize = 10
+	mqHint.TextXAlignment = Enum.TextXAlignment.Left
+	mqHint.TextWrapped = true
+	mqHint.TextColor3 = COL.muted
+	mqHint:SetAttribute("KitMutedLabel", true)
+	mqHint.Text =
+		"Offsets move the vertical quick-action strip (FLY / UP / DN / …). X is from the right edge of the screen (more negative = further left). Y is from the top (safe area included)."
+	mqHint.Size = UDim2.new(1, 0, 0, 40)
+	mqHint.Parent = pageCustom
+	makeNumRow("Quick bar offset X", function()
+		return ESP.mobileQuickOffX
+	end, function(v)
+		ESP.mobileQuickOffX = math.clamp(math.floor(v + 0.5), -400, -8)
+		K.syncMobileQuickFramePosition()
+	end, 4, "%.0f")
+	makeNumRow("Quick bar offset Y", function()
+		return ESP.mobileQuickOffY
+	end, function(v)
+		ESP.mobileQuickOffY = math.clamp(math.floor(v + 0.5), -40, 420)
+		K.syncMobileQuickFramePosition()
+	end, 4, "%.0f")
+	local resetQuickBarBtn = K.makeToggleButton(pageCustom, "Reset quick bar position", function()
+		ESP.mobileQuickOffX = -48
+		ESP.mobileQuickOffY = 12
+		K.syncMobileQuickFramePosition()
+		for _, r in ipairs(numRows) do
+			r.sync()
+		end
+	end)
+	resetQuickBarBtn.BackgroundColor3 = COL.btn
+
 	local resetBtn = K.makeToggleButton(pageCustom, "Reset all customization settings", function()
 		ESP.menuScale = 1
 		ESP.menuBgAlpha = 0
@@ -7976,6 +8128,9 @@ function K.menuFillCustomizeTab(pageCustom, menuRefs)
 		ESP.menuHideTabScrollbar = false
 		ESP.menuAlwaysTop = true
 		ESP.mobileQuickButtonsOn = true
+		ESP.mobileQuickOffX = -48
+		ESP.mobileQuickOffY = 12
+		K.syncMobileQuickFramePosition()
 		MENU_CFG.panel = { 18, 18, 18 }
 		MENU_CFG.top = { 30, 30, 30 }
 		MENU_CFG.tabsIdle = { 42, 42, 42 }
@@ -8626,6 +8781,14 @@ UserInputService.InputBegan:Connect(function(input, gameUsedIt)
 		K.refreshMoveLabels()
 		return
 	end
+	if ESP.targetKitElevKeyListen then
+		ESP.targetKitElevKeyListen = false
+		if input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
+			ESP.targetKitElevKey = input.KeyCode
+		end
+		K.syncTargetKitElevUi()
+		return
+	end
 	if ESP.opFaceKeyListen then
 		ESP.opFaceKeyListen = false
 		if input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
@@ -8648,6 +8811,11 @@ UserInputService.InputBegan:Connect(function(input, gameUsedIt)
 		flyOn = not flyOn
 		K.setFlyRunning()
 		K.refreshMoveLabels()
+		return
+	end
+	if input.KeyCode == ESP.targetKitElevKey then
+		ESP.targetKitElevatedChase = not ESP.targetKitElevatedChase
+		K.syncTargetKitElevUi()
 		return
 	end
 	if input.KeyCode == ESP.opFaceLockKey then
