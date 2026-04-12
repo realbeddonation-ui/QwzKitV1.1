@@ -1,4 +1,4 @@
-=--[[
+--[[
 	Tester toolkit — client-side QA helpers.
 	Landscape menu (#121212 solid panels, green accents); desktop uses full width/height, touch devices auto-fit via UIScale only.
 	Place in StarterPlayer > StarterPlayerScripts.
