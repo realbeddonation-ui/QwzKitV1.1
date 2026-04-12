@@ -292,19 +292,25 @@ local ESP = {
 		charDescConn = nil,
 		slotReplaceId = { "", "", "", "" },
 		slotPattern = { "projection breaker", "bleedout", "decisive strike", "cursory impact" },
+		slotPatBoxes = {},
 		activeReplaceTrack = nil,
 		toggleBtn = nil,
+		autoDetectBtn = nil,
+		forceOpenBackpackBtn = nil,
+		_uiTextBlacklist = nil,
 		replaceLbl = {},
 		_hookedAnimators = {},
 	},
 	animBlock = {
 		on = false,
+		movesOnlyMode = false,
 		conn = nil,
 		animatorConns = {},
 		animChildConn = nil,
 		charDescConn = nil,
 		_hookedAnimators = {},
 		toggleBtn = nil,
+		movesOnlyBtn = nil,
 	},
 }
 
@@ -344,9 +350,19 @@ local CC = {
 	animSlideAnimSpeed = 1,
 	animSlideTrack = nil,
 	animSlideConn = nil,
+	slideRunKeyBtn = nil,
+	slideStopKeyBtn = nil,
 	slideRunKey = Enum.KeyCode.Unknown,
 	slideStopKey = Enum.KeyCode.Unknown,
 	slideKeyListenMode = false,
+	walkAnimOn = false,
+	walkAnimId = "",
+	walkAnimStart = 0,
+	walkAnimEnd = 0.85,
+	walkAnimSpeed = 1,
+	walkAnimTrack = nil,
+	walkAnimConn = nil,
+	walkAnimToggleBtn = nil,
 	freecamOn = false,
 	freecamConn = nil,
 	freecamSavedType = nil,
@@ -1854,12 +1870,567 @@ function K.bindFinderAnimToMoveSlot(slotIdx)
 	K.refreshMoveAnimOverrideLabels()
 end
 
+function K.guiTreeLikelyVisible(guiObj)
+	local p = guiObj
+	while p do
+		if p:IsA("GuiObject") and not p.Visible then
+			return false
+		end
+		if p:IsA("LayerCollector") and not p.Enabled then
+			return false
+		end
+		p = p.Parent
+	end
+	return true
+end
+
 function K.moveAnimBuildHaystack(anim)
 	if not anim then
 		return ""
 	end
 	local aid = string.lower(tostring(anim.AnimationId or ""))
-	return string.lower((anim.Name or "") .. " " .. anim:GetFullName() .. " " .. aid)
+	local low = string.lower((anim.Name or "") .. " " .. anim:GetFullName() .. " " .. aid)
+	local anc = anim.Parent
+	while anc and anc ~= game do
+		if anc:IsA("Tool") then
+			low = low .. " " .. string.lower(tostring(anc.Name))
+		end
+		if anc:IsA("StringValue") or anc:IsA("ObjectValue") then
+			local v = anc.Value
+			if type(v) == "string" and v ~= "" then
+				low = low .. " " .. string.lower(v)
+			elseif typeof(v) == "Instance" and v then
+				low = low .. " " .. string.lower(v.Name)
+			end
+		end
+		anc = anc.Parent
+	end
+	return low
+end
+
+function K.moveAnimReplacementAnimator(sourceAnimator)
+	local hum = K.getHumanoid()
+	if hum and sourceAnimator and sourceAnimator:IsDescendantOf(hum.Parent) then
+		local main = hum:FindFirstChildOfClass("Animator")
+		if main then
+			return main
+		end
+		main = Instance.new("Animator")
+		main.Parent = hum
+		return main
+	end
+	return sourceAnimator
+end
+
+function K.moveAnimNormalizePatternText(s)
+	if type(s) ~= "string" then
+		return ""
+	end
+	s = s:gsub("^%s+", ""):gsub("%s+$", "")
+	s = string.lower(s)
+	s = s:gsub("%s+", " ")
+	return s
+end
+
+function K.moveAnimApplySlotPatterns(slotNames)
+	local m = ESP.moveAnim
+	for si = 1, 4 do
+		local raw = slotNames[si]
+		if type(raw) == "string" then
+			local t = K.moveAnimNormalizePatternText(raw)
+			if t ~= "" then
+				local core = t
+				local paren = string.match(t, "^(.-)%s*%(")
+				if paren and #paren >= 2 then
+					core = K.moveAnimNormalizePatternText(paren)
+				end
+				m.slotPattern[si] = core
+			end
+		end
+	end
+	for si = 1, 4 do
+		local box = m.slotPatBoxes and m.slotPatBoxes[si]
+		if box then
+			box.Text = m.slotPattern[si] or ""
+		end
+	end
+end
+
+function K.moveAnimCollectToolMoveNames()
+	local out = {}
+	local seen = {}
+	local function push(name)
+		if type(name) ~= "string" then
+			return
+		end
+		local n = K.moveAnimNormalizePatternText(name)
+		if n == "" or seen[n] then
+			return
+		end
+		seen[n] = true
+		table.insert(out, name)
+	end
+	local bp = me:FindFirstChildOfClass("Backpack")
+	if bp then
+		for _, ch in ipairs(bp:GetChildren()) do
+			if ch:IsA("Tool") then
+				push(ch.Name)
+			end
+		end
+	end
+	local char = me.Character
+	if char then
+		for _, ch in ipairs(char:GetChildren()) do
+			if ch:IsA("Tool") then
+				push(ch.Name)
+			end
+		end
+	end
+	return out
+end
+
+function K.moveAnimEnsureUiBlacklist()
+	local m = ESP.moveAnim
+	local b = m._uiTextBlacklist
+	if b then
+		return b
+	end
+	b = {}
+	local words = {
+		"chat",
+		"team chat",
+		"whisper",
+		"robux",
+		"premium",
+		"shop",
+		"store",
+		"market",
+		"settings",
+		"menu",
+		"inventory",
+		"map",
+		"quests",
+		"quest",
+		"daily",
+		"reward",
+		"claim",
+		"level",
+		"lvl",
+		"xp",
+		"exp",
+		"hp",
+		"health",
+		"stamina",
+		"mana",
+		"energy",
+		"shield",
+		"armor",
+		"defense",
+		"spectate",
+		"spectating",
+		"respawn",
+		"reset",
+		"freeze",
+		"report",
+		"trade",
+		"friends",
+		"codes",
+		"twitter",
+		"discord",
+		"youtube",
+		"loading",
+		"loaded",
+		"private",
+		"public",
+		"server",
+		"region",
+		"ping",
+		"fps",
+		"ms",
+		"latency",
+		"version",
+		"v1",
+		"v2",
+		"patch",
+		"update",
+		"news",
+		"announcement",
+		"announcements",
+		"leaderboard",
+		"stats",
+		"profile",
+		"avatar",
+		"emote",
+		"emotes",
+		"dance",
+		"walk",
+		"run",
+		"sprint",
+		"jump",
+		"crouch",
+		"shift",
+		"ctrl",
+		"space",
+		"esc",
+		"close",
+		"open",
+		"back",
+		"next",
+		"prev",
+		"previous",
+		"cancel",
+		"confirm",
+		"yes",
+		"no",
+		"ok",
+		"off",
+		"on",
+		"tab",
+		"buy",
+		"sell",
+		"free",
+		"sale",
+		"new",
+		"hot",
+		"live",
+		"afk",
+		"away",
+		"reconnecting",
+		"replicated",
+		"streaming",
+		"buffering",
+		"players",
+		"player list",
+		"join",
+		"leave",
+		"vote",
+		"voted",
+		"kick",
+		"ban",
+		"mod",
+		"admin",
+		"staff",
+		"rules",
+		"terms",
+		"privacy",
+		"credit",
+		"credits",
+		"music",
+		"sound",
+		"mute",
+		"unmute",
+		"fullscreen",
+		"windowed",
+		"graphics",
+		"quality",
+		"auto",
+		"low",
+		"high",
+		"ultra",
+		"ultra graphics",
+		"press",
+		"click",
+		"tap",
+		"hold",
+		"equipped",
+		"unequip",
+		"drop",
+		"pick up",
+		"pickup",
+		"interact",
+		"e",
+		"f",
+		"q",
+		"r",
+		"g",
+		"x",
+		"z",
+		"c",
+		"v",
+		"b",
+		"n",
+		"m",
+		"l",
+		"k",
+		"j",
+		"h",
+		"tip",
+		"tips",
+		"tutorial",
+		"objective",
+		"mission",
+		"stage",
+		"wave",
+		"round",
+		"time",
+		"timer",
+		"clock",
+		"score",
+		"points",
+		"coins",
+		"cash",
+		"money",
+		"gold",
+		"gems",
+		"diamonds",
+		"rarity",
+		"common",
+		"rare",
+		"epic",
+		"legendary",
+		"mythic",
+		"unknown",
+		"nil",
+		"n/a",
+		"na",
+		"---",
+		"...",
+		"—",
+		"–",
+	}
+	for _, w in ipairs(words) do
+		b[w] = true
+	end
+	m._uiTextBlacklist = b
+	return b
+end
+
+function K.moveAnimTextLooksLikeMoveName(txt)
+	if type(txt) ~= "string" then
+		return false
+	end
+	txt = txt:gsub("^%s+", ""):gsub("%s+$", "")
+	if #txt < 2 or #txt > 44 then
+		return false
+	end
+	if txt:match("^%d+$") then
+		return false
+	end
+	if txt:match("%d+%s*/%s*%d+") or txt:match("%d+%s*%%") then
+		return false
+	end
+	if not txt:match("[%a]") then
+		return false
+	end
+	local low = string.lower(txt)
+	local bl = K.moveAnimEnsureUiBlacklist()
+	if bl[low] then
+		return false
+	end
+	if #low <= 3 and not txt:match("%s") then
+		return false
+	end
+	local up = string.upper(txt)
+	if up == "USE THRICE" or up == "EQUIPPED" or up == "NEW" then
+		return false
+	end
+	return true
+end
+
+function K.moveAnimGuiPathSuggestsHotbar(guiObj)
+	local ok, path = pcall(function()
+		return string.lower(guiObj:GetFullName())
+	end)
+	if not ok or not path then
+		return false
+	end
+	local needles = {
+		"hotbar",
+		"skillbar",
+		"abilitybar",
+		"actionbar",
+		"toolbar",
+		"movebar",
+		"moveset",
+		"equipbar",
+		"combatbar",
+		"combathud",
+		"cooldown",
+		"keybind",
+		"slotbar",
+		"weaponbar",
+		"loadout",
+		"quickslot",
+		"quickslotbar",
+		"hudbar",
+		"bottombar",
+		"actionslot",
+		"skillslot",
+		"abilities",
+	}
+	for i = 1, #needles do
+		if string.find(path, needles[i], 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+function K.moveAnimDetectHotbarRowFromGuiStrict()
+	local pg = guiRoot
+	if not pg then
+		return nil
+	end
+	local samples = {}
+	for _, d in pg:GetDescendants() do
+		if (d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox")) and K.guiTreeLikelyVisible(d) and K.moveAnimGuiPathSuggestsHotbar(d) then
+			local txt = d.Text
+			if type(txt) == "string" and K.moveAnimTextLooksLikeMoveName(txt) then
+				txt = txt:gsub("^%s+", ""):gsub("%s+$", "")
+				local ok, pos = pcall(function()
+					return d.AbsolutePosition
+				end)
+				if ok and pos then
+					local ok2, sz = pcall(function()
+						return d.AbsoluteSize
+					end)
+					local w = (ok2 and sz and sz.X > 0) and sz.X or 0
+					if not (w > 0 and w < 18) then
+						table.insert(samples, { y = pos.Y, x = pos.X, text = txt })
+					end
+				end
+			end
+		end
+	end
+	if #samples < 4 then
+		return nil
+	end
+	local buckets = {}
+	for _, s in ipairs(samples) do
+		local key = math.floor((s.y + 8) / 18)
+		local row = buckets[key]
+		if not row then
+			row = {}
+			buckets[key] = row
+		end
+		table.insert(row, s)
+	end
+	local bestRow, bestScore = nil, -1
+	for _, row in pairs(buckets) do
+		if #row >= 4 then
+			local maxY = -1e9
+			for _, s in ipairs(row) do
+				if s.y > maxY then
+					maxY = s.y
+				end
+			end
+			local score = #row * 100000 + maxY
+			if score > bestScore then
+				bestScore = score
+				bestRow = row
+			end
+		end
+	end
+	if not bestRow then
+		return nil
+	end
+	table.sort(bestRow, function(a, b)
+		return a.x < b.x
+	end)
+	local deduped = {}
+	local seenText = {}
+	for _, s in ipairs(bestRow) do
+		local key = K.moveAnimNormalizePatternText(s.text)
+		if key ~= "" and not seenText[key] then
+			seenText[key] = true
+			table.insert(deduped, s)
+		end
+	end
+	if #deduped < 4 then
+		return nil
+	end
+	local names = {}
+	for i = 1, 4 do
+		names[i] = deduped[i].text
+	end
+	return names
+end
+
+function K.forceEnableAndOpenBackpack()
+	local StarterGui = game:GetService("StarterGui")
+	pcall(function()
+		StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, true)
+	end)
+	pcall(function()
+		StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true)
+	end)
+	local vim = nil
+	pcall(function()
+		vim = game:GetService("VirtualInputManager")
+	end)
+	if vim and vim.SendKeyEvent then
+		pcall(function()
+			vim:SendKeyEvent(true, Enum.KeyCode.Backquote, false, game)
+		end)
+		task.defer(function()
+			pcall(function()
+				vim:SendKeyEvent(false, Enum.KeyCode.Backquote, false, game)
+			end)
+		end)
+	end
+	for _, coreName in ipairs({ "ToggleInventory", "BackpackOpen", "OpenPlayerInventory" }) do
+		pcall(function()
+			StarterGui:SetCore(coreName, true)
+		end)
+	end
+	warn(
+		"[TesterToolkit] Backpack: re-enabled Core backpack UI and sent open/toggle attempts (incl. ` key). If nothing opens, the game uses a fully custom inventory — Tools may still exist under Player.Backpack for auto-detect."
+	)
+end
+
+function K.autoDetectMoveAnimSlotPatterns()
+	local tools = K.moveAnimCollectToolMoveNames()
+	local fromGui = K.moveAnimDetectHotbarRowFromGuiStrict()
+	local slotNames = { "", "", "", "" }
+	local src = nil
+	if #tools >= 4 then
+		for i = 1, 4 do
+			slotNames[i] = tools[i]
+		end
+		src = "Backpack / Character tools (first 4)"
+	elseif #tools >= 1 then
+		for i = 1, math.min(4, #tools) do
+			slotNames[i] = tools[i]
+		end
+		src = "Backpack / Character tools (partial)"
+		if fromGui then
+			local used = {}
+			for si = 1, 4 do
+				local t = slotNames[si]
+				if type(t) == "string" and t ~= "" then
+					used[K.moveAnimNormalizePatternText(t)] = true
+				end
+			end
+			local gi = 1
+			for si = 1, 4 do
+				if slotNames[si] == "" or slotNames[si] == nil then
+					while gi <= #fromGui do
+						local cand = fromGui[gi]
+						gi = gi + 1
+						local k = type(cand) == "string" and K.moveAnimNormalizePatternText(cand) or ""
+						if k ~= "" and not used[k] then
+							slotNames[si] = cand
+							used[k] = true
+							break
+						end
+					end
+				end
+			end
+			src = src .. " + strict hotbar UI path"
+		end
+	elseif fromGui then
+		for i = 1, 4 do
+			slotNames[i] = fromGui[i] or ""
+		end
+		src = "hotbar UI (path must contain hotbar/skillbar/etc.)"
+	else
+		warn(
+			"[TesterToolkit] Auto-detect: no Tools in Backpack/Character and no strict hotbar labels — try “Force backpack / Core hotbar”, equip moves, then auto-detect again; or type match text manually."
+		)
+		return
+	end
+	K.moveAnimApplySlotPatterns(slotNames)
+	warn("[TesterToolkit] Auto-detect: filled match text from " .. src .. ". Bind replacement IDs from the scanner for each slot if needed.")
 end
 
 function K.moveAnimIdsMatch(a, b)
@@ -1969,8 +2540,17 @@ function K.onMoveAnimTrackPlayed(track, animator)
 			local pat = type(rawPat) == "string" and string.lower(rawPat) or ""
 			pat = pat:gsub("^%s+", ""):gsub("%s+$", "")
 			if pat ~= "" and string.find(hay, pat, 1, true) then
+				if m.marked[track] then
+					return
+				end
+				m.marked[track] = true
 				pcall(function()
-					track:Stop(0)
+					track.Stopped:Connect(function()
+						m.marked[track] = nil
+					end)
+				end)
+				pcall(function()
+					track:Stop(0.05)
 				end)
 				task.defer(function()
 					if m.on and animator and animator.Parent then
@@ -2007,6 +2587,7 @@ function K.playMoveAnimReplacement(animator, animId)
 	if not animator or type(animId) ~= "string" or animId == "" then
 		return
 	end
+	local playOn = K.moveAnimReplacementAnimator(animator)
 	if ESP.moveAnim.activeReplaceTrack then
 		pcall(function()
 			ESP.moveAnim.activeReplaceTrack:Stop(0.08)
@@ -2016,23 +2597,31 @@ function K.playMoveAnimReplacement(animator, animId)
 	local a = Instance.new("Animation")
 	a.AnimationId = animId
 	local ok, track = pcall(function()
-		return animator:LoadAnimation(a)
+		return playOn:LoadAnimation(a)
 	end)
 	a:Destroy()
+	if not ok or not track then
+		local a2 = Instance.new("Animation")
+		a2.AnimationId = animId
+		ok, track = pcall(function()
+			return animator:LoadAnimation(a2)
+		end)
+		a2:Destroy()
+	end
 	if not ok or not track then
 		warn("[TesterToolkit] Move anim override: LoadAnimation failed (invalid id, private asset, or animator error).")
 		return
 	end
 	track.Priority = Enum.AnimationPriority.Action4
 	track.Looped = false
-	pcall(function()
-		track:Play(0.05, 1, 1)
-	end)
 	ESP.moveAnim.activeReplaceTrack = track
 	track.Stopped:Connect(function()
 		if ESP.moveAnim.activeReplaceTrack == track then
 			ESP.moveAnim.activeReplaceTrack = nil
 		end
+	end)
+	pcall(function()
+		track:Play(0.05, 1, 1)
 	end)
 end
 
@@ -2080,7 +2669,7 @@ function K.moveAnimOverrideStep()
 										end)
 									end)
 									pcall(function()
-										tr:Stop(0)
+										tr:Stop(0.05)
 									end)
 									task.defer(function()
 										if m.on and animator and animator.Parent then
@@ -2145,8 +2734,39 @@ function K.animBlockShouldAllow(track)
 	if CC.animSlideTrack == track then
 		return true
 	end
+	if CC.walkAnimTrack and track == CC.walkAnimTrack then
+		return true
+	end
 	if ESP.moveAnim.activeReplaceTrack == track then
 		return true
+	end
+	if ESP.animBlock.movesOnlyMode then
+		local anim = track.Animation
+		if not anim then
+			return false
+		end
+		local id = anim.AnimationId or ""
+		for si = 1, 4 do
+			local rid = ESP.moveAnim.slotReplaceId[si]
+			if type(rid) == "string" and rid ~= "" and K.moveAnimIdsMatch(id, rid) then
+				return true
+			end
+		end
+		if ESP.moveAnim.on then
+			local hay = K.moveAnimBuildHaystack(anim)
+			for si = 1, 4 do
+				local repl = ESP.moveAnim.slotReplaceId[si]
+				if type(repl) == "string" and repl ~= "" then
+					local rawPat = ESP.moveAnim.slotPattern[si]
+					local pat = type(rawPat) == "string" and K.moveAnimNormalizePatternText(rawPat) or ""
+					pat = pat:gsub("^%s+", ""):gsub("%s+$", "")
+					if pat ~= "" and string.find(hay, pat, 1, true) then
+						return true
+					end
+				end
+			end
+		end
+		return false
 	end
 	return false
 end
@@ -2281,6 +2901,10 @@ function K.setAnimBlockRunning()
 	end
 	if ESP.animBlock.toggleBtn then
 		ESP.animBlock.toggleBtn.Text = ESP.animBlock.on and "Animation blocker: on" or "Animation blocker: off"
+	end
+	if ESP.animBlock.movesOnlyBtn then
+		ESP.animBlock.movesOnlyBtn.Text = ESP.animBlock.movesOnlyMode and "Blocker: only bound / override anims: on"
+			or "Blocker: only bound / override anims: off"
 	end
 end
 
@@ -3750,6 +4374,23 @@ function K.buildMobileQuickButtons(screen)
 	mobileQuickFrame = host
 end
 
+function K.refreshAnimSlideKeyBtns()
+	if CC.slideRunKeyBtn then
+		if CC.slideKeyListenMode == "run" then
+			CC.slideRunKeyBtn.Text = "Press key for RUN (Esc=cancel)…"
+		else
+			CC.slideRunKeyBtn.Text = "Run slide: " .. CC.slideRunKey.Name .. " (click)"
+		end
+	end
+	if CC.slideStopKeyBtn then
+		if CC.slideKeyListenMode == "stop" then
+			CC.slideStopKeyBtn.Text = "Press key for STOP (Esc=cancel)…"
+		else
+			CC.slideStopKeyBtn.Text = "Stop slide: " .. CC.slideStopKey.Name .. " (click)"
+		end
+	end
+end
+
 function K.populateAnimScanList()
 	if not animScanScroll then
 		return
@@ -4861,6 +5502,167 @@ function CC.runAnimSlide()
 	end)
 end
 
+function CC.shouldSuppressForWalkReplace(track)
+	if not track or track == CC.walkAnimTrack or not track.Animation then
+		return false
+	end
+	if track.Priority.Value > Enum.AnimationPriority.Movement.Value then
+		return false
+	end
+	local hay = string.lower(K.moveAnimBuildHaystack(track.Animation))
+	if string.find(hay, "jump", 1, true) or string.find(hay, "fall", 1, true) or string.find(hay, "climb", 1, true) then
+		return false
+	end
+	if string.find(hay, "animate", 1, true) then
+		return true
+	end
+	if string.find(hay, "walk", 1, true) or string.find(hay, "run", 1, true) then
+		return true
+	end
+	return false
+end
+
+function CC.stopWalkAnimReplace()
+	if CC.walkAnimConn then
+		CC.walkAnimConn:Disconnect()
+		CC.walkAnimConn = nil
+	end
+	if CC.walkAnimTrack then
+		pcall(function()
+			CC.walkAnimTrack:Stop(0.12)
+		end)
+		CC.walkAnimTrack = nil
+	end
+end
+
+function CC.walkAnimMaintain()
+	if not CC.walkAnimOn or flyOn or CC.freecamOn then
+		return
+	end
+	local char = me.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then
+		return
+	end
+	local tr = CC.walkAnimTrack
+	if not tr then
+		return
+	end
+	local a0 = math.max(0, CC.walkAnimStart)
+	local a1 = math.max(a0 + 0.03, CC.walkAnimEnd)
+	local len = tr.Length
+	if len > 0 then
+		if a1 > len then
+			a1 = len
+		end
+		if a0 >= a1 then
+			a0 = 0
+			a1 = math.min(0.12, len)
+		end
+	end
+	local moving = hum.MoveDirection.Magnitude >= 0.08
+	if not moving then
+		pcall(function()
+			if tr.IsPlaying then
+				tr:Stop(0.1)
+			end
+		end)
+	else
+		if not tr.IsPlaying then
+			pcall(function()
+				tr:Play(0.08, 1, CC.walkAnimSpeed)
+			end)
+		end
+		pcall(function()
+			tr:AdjustWeight(1, 0.08)
+		end)
+		local tp = tr.TimePosition
+		if tp < a0 or tp >= a1 then
+			pcall(function()
+				tr.TimePosition = a0
+			end)
+		end
+		local function sweep(animator)
+			if not animator then
+				return
+			end
+			for _, otr in ipairs(animator:GetPlayingAnimationTracks()) do
+				if otr ~= tr and CC.shouldSuppressForWalkReplace(otr) then
+					pcall(function()
+						otr:Stop(0.06)
+					end)
+				end
+			end
+		end
+		sweep(hum:FindFirstChildOfClass("Animator"))
+		for _, d in char:GetDescendants() do
+			if d:IsA("Animator") then
+				sweep(d)
+			end
+		end
+	end
+end
+
+function CC.setWalkAnimRunning()
+	CC.stopWalkAnimReplace()
+	if not CC.walkAnimOn then
+		if CC.walkAnimToggleBtn then
+			CC.walkAnimToggleBtn.Text = "Walk anim replace: off"
+		end
+		return
+	end
+	local char = me.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then
+		warn("[TesterToolkit] Walk anim: no Humanoid.")
+		CC.walkAnimOn = false
+		if CC.walkAnimToggleBtn then
+			CC.walkAnimToggleBtn.Text = "Walk anim replace: off"
+		end
+		return
+	end
+	local idStr = CC.walkAnimId or ""
+	local digits = string.match(idStr, "(%d+)")
+	if not digits then
+		warn("[TesterToolkit] Walk anim: need an rbxasset id (scanner or text box).")
+		CC.walkAnimOn = false
+		if CC.walkAnimToggleBtn then
+			CC.walkAnimToggleBtn.Text = "Walk anim replace: off"
+		end
+		return
+	end
+	local animator = hum:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Parent = hum
+	end
+	local anim = Instance.new("Animation")
+	anim.AnimationId = "rbxassetid://" .. digits
+	local ok, tr = pcall(function()
+		return animator:LoadAnimation(anim)
+	end)
+	anim:Destroy()
+	if not ok or not tr then
+		warn("[TesterToolkit] Walk anim: LoadAnimation failed.")
+		CC.walkAnimOn = false
+		if CC.walkAnimToggleBtn then
+			CC.walkAnimToggleBtn.Text = "Walk anim replace: off"
+		end
+		return
+	end
+	CC.walkAnimTrack = tr
+	tr.Priority = Enum.AnimationPriority.Movement
+	tr.Looped = true
+	pcall(function()
+		tr:AdjustSpeed(CC.walkAnimSpeed)
+		tr:Play(0.12, 1, CC.walkAnimSpeed)
+	end)
+	CC.walkAnimConn = RunService.Heartbeat:Connect(CC.walkAnimMaintain)
+	if CC.walkAnimToggleBtn then
+		CC.walkAnimToggleBtn.Text = "Walk anim replace: on"
+	end
+end
+
 function CC.runSubtleFling()
 	local r = K.getRoot()
 	if not r or not r.Parent then
@@ -5098,6 +5900,10 @@ function CC.cleanupOnRespawn()
 	CC.stopAnimSlide()
 	CC.stopFreecam()
 	CC.stopOrbit()
+	CC.stopWalkAnimReplace()
+	if CC.walkAnimOn then
+		task.defer(CC.setWalkAnimRunning)
+	end
 end
 
 function K.buildCreateTab(pageCreate)
@@ -5201,7 +6007,7 @@ function K.buildCreateTab(pageCreate)
 	note.TextWrapped = true
 	note.TextColor3 = COL.muted
 	note.Text =
-		"Fling = many impulses on your HRP so you can physically bump others (works when your character is simulated). Anim slide = root motion + optional animation. Set run/stop slide hotkeys below."
+		"Fling = many impulses on your HRP so you can physically bump others (works when your character is simulated). Anim slide / walk replace / scanner live under the Animation tab."
 	note.Size = UDim2.new(1, 0, 0, 52)
 	note.Parent = pageCreate
 
@@ -5292,194 +6098,6 @@ function K.buildCreateTab(pageCreate)
 
 	K.makeToggleButton(pageCreate, "Run fling (your HRP)", function()
 		task.spawn(CC.runSubtleFling)
-	end)
-
-	sectionLabel(pageCreate, "ANIM SLIDE (smooth move + anim)")
-	local idBox = Instance.new("TextBox")
-	idBox.Size = UDim2.new(1, 0, 0, 30)
-	idBox.BackgroundColor3 = COL.inputBg
-	idBox.TextColor3 = Color3.new(1, 1, 1)
-	idBox.Font = Enum.Font.Gotham
-	idBox.TextSize = 12
-	idBox.PlaceholderText = "Animation rbxassetid or paste full id"
-	idBox.Text = CC.animSlideId
-	idBox.ClearTextOnFocus = false
-	idBox.Parent = pageCreate
-	K.roundCorners(idBox, 6)
-	idBox:GetPropertyChangedSignal("Text"):Connect(function()
-		CC.animSlideId = idBox.Text
-	end)
-
-	K.makeToggleButton(pageCreate, "Use Combat tab selected animation", function()
-		if animScanSelected and animScanSelected:IsA("Animation") then
-			CC.animSlideId = animScanSelected.AnimationId or ""
-			idBox.Text = CC.animSlideId
-		else
-			warn("[Qwz kit] Pick an animation row in Combat first.")
-		end
-	end)
-
-	local animSpdRow = Instance.new("Frame")
-	animSpdRow.BackgroundTransparency = 1
-	animSpdRow.Size = UDim2.new(1, 0, 0, 30)
-	animSpdRow.Parent = pageCreate
-	local asLay = Instance.new("UIListLayout", animSpdRow)
-	asLay.FillDirection = Enum.FillDirection.Horizontal
-	asLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
-	asLay.Padding = UDim.new(0, 6)
-	local asRead = Instance.new("TextLabel")
-	asRead.BackgroundTransparency = 1
-	asRead.Size = UDim2.new(1, -140, 1, 0)
-	asRead.Font = Enum.Font.Gotham
-	asRead.TextSize = 11
-	asRead.TextXAlignment = Enum.TextXAlignment.Left
-	asRead.TextColor3 = Color3.fromRGB(200, 205, 220)
-	asRead.Text = string.format("Anim / slide speed: %.2f", CC.animSlideAnimSpeed)
-	asRead.Parent = animSpdRow
-	local asDown = Instance.new("TextButton")
-	asDown.Size = UDim2.fromOffset(32, 26)
-	asDown.Text = "−"
-	asDown.Parent = animSpdRow
-	K.roundCorners(asDown, 5)
-	asDown.MouseButton1Click:Connect(function()
-		CC.animSlideAnimSpeed = CC.animSlideAnimSpeed - 0.1
-		asRead.Text = string.format("Anim / slide speed: %.2f", CC.animSlideAnimSpeed)
-	end)
-	local asUp = Instance.new("TextButton")
-	asUp.Size = UDim2.fromOffset(32, 26)
-	asUp.Text = "+"
-	asUp.Parent = animSpdRow
-	K.roundCorners(asUp, 5)
-	asUp.MouseButton1Click:Connect(function()
-		CC.animSlideAnimSpeed = CC.animSlideAnimSpeed + 0.1
-		asRead.Text = string.format("Anim / slide speed: %.2f", CC.animSlideAnimSpeed)
-	end)
-
-	local slideRunKeyBtn
-	local slideStopKeyBtn
-	slideRunKeyBtn = K.makeToggleButton(pageCreate, "Hotkey: run anim slide (click)", function(btn)
-		CC.slideKeyListenMode = CC.slideKeyListenMode == "run" and false or "run"
-		btn.Text = CC.slideKeyListenMode == "run" and "Press key for RUN (Esc=cancel)…"
-			or ("Run slide: " .. CC.slideRunKey.Name .. " (click)")
-		if CC.slideKeyListenMode ~= "stop" and slideStopKeyBtn then
-			slideStopKeyBtn.Text = "Stop slide: " .. CC.slideStopKey.Name .. " (click)"
-		end
-	end)
-	slideStopKeyBtn = K.makeToggleButton(pageCreate, "Hotkey: stop anim slide (click)", function(btn)
-		CC.slideKeyListenMode = CC.slideKeyListenMode == "stop" and false or "stop"
-		btn.Text = CC.slideKeyListenMode == "stop" and "Press key for STOP (Esc=cancel)…"
-			or ("Stop slide: " .. CC.slideStopKey.Name .. " (click)")
-		if CC.slideKeyListenMode ~= "run" and slideRunKeyBtn then
-			slideRunKeyBtn.Text = "Run slide: " .. CC.slideRunKey.Name .. " (click)"
-		end
-	end)
-
-	local function axisBlock(title, key, step)
-		local row = Instance.new("Frame")
-		row.BackgroundTransparency = 1
-		row.Size = UDim2.new(1, 0, 0, 28)
-		row.Parent = pageCreate
-		local lay = Instance.new("UIListLayout", row)
-		lay.FillDirection = Enum.FillDirection.Horizontal
-		lay.HorizontalAlignment = Enum.HorizontalAlignment.Right
-		lay.Padding = UDim.new(0, 6)
-		local lbl = Instance.new("TextLabel")
-		lbl.BackgroundTransparency = 1
-		lbl.Size = UDim2.new(1, -130, 1, 0)
-		lbl.Font = Enum.Font.Gotham
-		lbl.TextSize = 11
-		lbl.TextXAlignment = Enum.TextXAlignment.Left
-		lbl.TextColor3 = Color3.fromRGB(200, 205, 220)
-		lbl.Text = title .. ": 0 studs"
-		lbl.Parent = row
-		local d = Instance.new("TextButton")
-		d.Size = UDim2.fromOffset(28, 24)
-		d.Text = "−"
-		d.Parent = row
-		K.roundCorners(d, 4)
-		local u = Instance.new("TextButton")
-		u.Size = UDim2.fromOffset(28, 24)
-		u.Text = "+"
-		u.Parent = row
-		K.roundCorners(u, 4)
-		local function sync()
-			lbl.Text = title .. ": " .. tostring(math.floor(CC[key] * 10) / 10) .. " studs"
-		end
-		d.MouseButton1Click:Connect(function()
-			CC[key] = CC[key] - step
-			sync()
-		end)
-		u.MouseButton1Click:Connect(function()
-			CC[key] = CC[key] + step
-			sync()
-		end)
-		sync()
-	end
-
-	axisBlock("Forward (look)", "animSlideFwd", 1)
-	axisBlock("Back", "animSlideBack", 1)
-	axisBlock("Right", "animSlideRight", 1)
-	axisBlock("Left", "animSlideLeft", 1)
-	axisBlock("Up", "animSlideUp", 1)
-	axisBlock("Down", "animSlideDown", 1)
-	local camDirBtn = K.makeToggleButton(pageCreate, "Slide uses camera direction: off", function(btn)
-		CC.animSlideUseCamera = not CC.animSlideUseCamera
-		btn.Text = CC.animSlideUseCamera and "Slide uses camera direction: on"
-			or "Slide uses camera direction: off"
-	end)
-	camDirBtn.Text = CC.animSlideUseCamera and "Slide uses camera direction: on"
-		or "Slide uses camera direction: off"
-
-	local durRow = Instance.new("Frame")
-	durRow.BackgroundTransparency = 1
-	durRow.Size = UDim2.new(1, 0, 0, 30)
-	durRow.Parent = pageCreate
-	local dLay = Instance.new("UIListLayout", durRow)
-	dLay.FillDirection = Enum.FillDirection.Horizontal
-	dLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
-	dLay.Padding = UDim.new(0, 6)
-	local durLbl = Instance.new("TextLabel")
-	durLbl.BackgroundTransparency = 1
-	durLbl.Size = UDim2.new(1, -140, 1, 0)
-	durLbl.Font = Enum.Font.Gotham
-	durLbl.TextSize = 11
-	durLbl.TextXAlignment = Enum.TextXAlignment.Left
-	durLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
-	durLbl.Parent = durRow
-	local durDown = Instance.new("TextButton")
-	durDown.Size = UDim2.fromOffset(32, 26)
-	durDown.Text = "−"
-	durDown.Parent = durRow
-	K.roundCorners(durDown, 5)
-	local durUp = Instance.new("TextButton")
-	durUp.Size = UDim2.fromOffset(32, 26)
-	durUp.Text = "+"
-	durUp.Parent = durRow
-	K.roundCorners(durUp, 5)
-	local function durSync()
-		durLbl.Text = "Duration: " .. string.format("%.2fs", CC.animSlideDuration)
-	end
-	durDown.MouseButton1Click:Connect(function()
-		CC.animSlideDuration = CC.animSlideDuration - 0.15
-		durSync()
-	end)
-	durUp.MouseButton1Click:Connect(function()
-		CC.animSlideDuration = CC.animSlideDuration + 0.15
-		durSync()
-	end)
-	durSync()
-
-	local easeBtn = K.makeToggleButton(pageCreate, "Ease in/out (smoothstep)", function(btn)
-		CC.animSlideEase = not CC.animSlideEase
-		btn.Text = CC.animSlideEase and "Ease in/out: on" or "Ease in/out: off"
-	end)
-	easeBtn.Text = CC.animSlideEase and "Ease in/out: on" or "Ease in/out: off"
-
-	K.makeToggleButton(pageCreate, "▶ Run anim slide (your character)", function()
-		CC.runAnimSlide()
-	end)
-	K.makeToggleButton(pageCreate, "■ Stop anim slide", function()
-		CC.stopAnimSlide()
 	end)
 
 	sectionLabel(pageCreate, "FREECAM (Scriptable)")
@@ -7210,7 +7828,7 @@ function K.menuFillTargetTab(pageTarget)
 	task.defer(K.refreshTargetKitList)
 end
 
-function K.menuFillCombatTabHitboxAnim(pageCombat)
+function K.menuFillCombatTabHitboxOnly(pageCombat)
 	K.addSectionLabel(pageCombat, "HITBOX OBSERVER")
 	local hbNote = Instance.new("TextLabel")
 	hbNote.BackgroundTransparency = 1
@@ -7369,8 +7987,10 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 		end
 		K.hitboxRescanWorld()
 	end)
+end
 
-	K.addSectionLabel(pageCombat, "ANIMATION SCANNER")
+function K.menuFillAnimationTab(pageAnim)
+	K.addSectionLabel(pageAnim, "ANIMATION SCANNER")
 	local animNote = Instance.new("TextLabel")
 	animNote.BackgroundTransparency = 1
 	animNote.Font = Enum.Font.Gotham
@@ -7381,12 +8001,12 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	animNote.Text =
 		"Animation scanner for R6 testers.\nSteps: click the Path filter box (example: R6), then click \"Scan for animations\".\nPick an animation row + a target player, then press Play.\nIf you don't see the preview on your client, other testers still may see it (depends on your game’s animation replication)."
 	animNote.Size = UDim2.new(1, 0, 0, 52)
-	animNote.Parent = pageCombat
+	animNote.Parent = pageAnim
 
 	local searchRow = Instance.new("Frame")
 	searchRow.BackgroundTransparency = 1
 	searchRow.Size = UDim2.new(1, 0, 0, 34)
-	searchRow.Parent = pageCombat
+	searchRow.Parent = pageAnim
 	local searchLayout = Instance.new("UIListLayout")
 	searchLayout.FillDirection = Enum.FillDirection.Horizontal
 	searchLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
@@ -7418,7 +8038,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 		K.populateAnimScanList()
 	end)
 
-	local pathFilterToggle = K.makeToggleButton(pageCombat, "Limit scan to paths containing filter text", function(btn)
+	local pathFilterToggle = K.makeToggleButton(pageAnim, "Limit scan to paths containing filter text", function(btn)
 		animScanR6PathOnly = not animScanR6PathOnly
 		btn.Text = animScanR6PathOnly and "Path filter: ON ✓" or "Path filter: OFF (everywhere)"
 	end)
@@ -7432,7 +8052,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	pathFilterBox.TextSize = 13
 	pathFilterBox.Text = animPathFilterText
 	pathFilterBox.ClearTextOnFocus = false
-	pathFilterBox.Parent = pageCombat
+	pathFilterBox.Parent = pageAnim
 	K.roundCorners(pathFilterBox, 6)
 
 	local scanAnimBtn = Instance.new("TextButton")
@@ -7444,7 +8064,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	scanAnimBtn.BackgroundColor3 = COL.btn
 	scanAnimBtn.BorderSizePixel = 0
 	scanAnimBtn.AutoButtonColor = false
-	scanAnimBtn.Parent = pageCombat
+	scanAnimBtn.Parent = pageAnim
 	K.roundCorners(scanAnimBtn, 8)
 	scanAnimBtn.MouseButton1Click:Connect(function()
 		animPathFilterText = pathFilterBox.Text
@@ -7465,7 +8085,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	animScanScroll.ScrollingEnabled = true
 	animScanScroll.ScrollingDirection = Enum.ScrollingDirection.Y
 	animScanScroll.ElasticBehavior = Enum.ElasticBehavior.Never
-	animScanScroll.Parent = pageCombat
+	animScanScroll.Parent = pageAnim
 	K.roundCorners(animScanScroll, 8)
 	K.enableTouchScroll(animScanScroll)
 	local animScanListLayout = Instance.new("UIListLayout", animScanScroll)
@@ -7482,7 +8102,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	animSelectionLabel.TextWrapped = true
 	animSelectionLabel.TextColor3 = Color3.fromRGB(200, 205, 220)
 	animSelectionLabel.Text = "Selected: (click a row)"
-	animSelectionLabel.Parent = pageCombat
+	animSelectionLabel.Parent = pageAnim
 
 	animTargetLabel = Instance.new("TextLabel")
 	animTargetLabel.BackgroundTransparency = 1
@@ -7492,12 +8112,12 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	animTargetLabel.TextXAlignment = Enum.TextXAlignment.Left
 	animTargetLabel.TextColor3 = Color3.fromRGB(220, 230, 255)
 	animTargetLabel.Text = "Target:"
-	animTargetLabel.Parent = pageCombat
+	animTargetLabel.Parent = pageAnim
 
 	local tgtRow = Instance.new("Frame")
 	tgtRow.BackgroundTransparency = 1
 	tgtRow.Size = UDim2.new(1, 0, 0, 32)
-	tgtRow.Parent = pageCombat
+	tgtRow.Parent = pageAnim
 	local tgtLayout = Instance.new("UIListLayout")
 	tgtLayout.FillDirection = Enum.FillDirection.Horizontal
 	tgtLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
@@ -7552,10 +8172,10 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 		K.refreshAnimTrackReadout()
 	end)
 
-	local playAnimBtn = K.makeToggleButton(pageCombat, "Play selected on target (R6-oriented)", function()
+	local playAnimBtn = K.makeToggleButton(pageAnim, "Play selected on target (R6-oriented)", function()
 		K.playSelectedAnimOnTarget()
 	end)
-	local stopAnimBtn = K.makeToggleButton(pageCombat, "Stop preview track", function()
+	local stopAnimBtn = K.makeToggleButton(pageAnim, "Stop preview track", function()
 		K.stopPreviewTrack()
 	end)
 
@@ -7567,10 +8187,10 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	animPlayingReadout.TextXAlignment = Enum.TextXAlignment.Left
 	animPlayingReadout.TextWrapped = true
 	animPlayingReadout.TextColor3 = COL.muted
-	animPlayingReadout.Text = "Playing tracks: (open Combat tab, pick player, tap Tracks)"
-	animPlayingReadout.Parent = pageCombat
+	animPlayingReadout.Text = "Playing tracks: (open Animation tab, pick player, tap Tracks)"
+	animPlayingReadout.Parent = pageAnim
 
-	K.addSectionLabel(pageCombat, "MOVE ANIM OVERRIDE (hotbar)")
+	K.addSectionLabel(pageAnim, "MOVE ANIM OVERRIDE (hotbar)")
 	local movNote = Instance.new("TextLabel")
 	movNote.BackgroundTransparency = 1
 	movNote.Font = Enum.Font.Gotham
@@ -7579,20 +8199,26 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	movNote.TextWrapped = true
 	movNote.TextColor3 = COL.muted
 	movNote.Text =
-		"Uses Animator.AnimationPlayed (fires when a move starts). Match text checks Animation name, full path, and rbxasset id — if defaults never fire, pick yourself as target, use a move, tap Tracks, then paste part of the id or path into the slot.\nBind = replacement from the scanner row above. Local visuals only; private animation assets may refuse to load."
+		"Uses Animator.AnimationPlayed (fires when a move starts). Match text checks Animation name, full path, Tool ancestry, StringValues, and rbxasset id — if defaults never fire, pick yourself as target, use a move, tap Tracks, then paste part of the id or path into the slot.\nAuto-detect prefers real Tool names from Backpack/Character (most reliable). GUI fallback only uses labels under paths containing hotbar/skillbar/actionbar/etc., plus a junk-word filter. “Force backpack” re-enables Core backpack and tries to open it (` key). Bind = replacement from the scanner. Local visuals only."
 	movNote.Size = UDim2.new(1, 0, 0, 76)
-	movNote.Parent = pageCombat
+	movNote.Parent = pageAnim
 
-	ESP.moveAnim.toggleBtn = K.makeToggleButton(pageCombat, "Move anim override: off", function()
+	ESP.moveAnim.toggleBtn = K.makeToggleButton(pageAnim, "Move anim override: off", function()
 		ESP.moveAnim.on = not ESP.moveAnim.on
 		K.setMoveAnimOverrideRunning()
+	end)
+	ESP.moveAnim.autoDetectBtn = K.makeToggleButton(pageAnim, "Auto-detect hotbar / tool names", function()
+		K.autoDetectMoveAnimSlotPatterns()
+	end)
+	ESP.moveAnim.forceOpenBackpackBtn = K.makeToggleButton(pageAnim, "Force backpack / Core hotbar", function()
+		K.forceEnableAndOpenBackpack()
 	end)
 
 	for si = 1, 4 do
 		local slotRow = Instance.new("Frame")
 		slotRow.BackgroundTransparency = 1
 		slotRow.Size = UDim2.new(1, 0, 0, UserInputService.TouchEnabled and 40 or 34)
-		slotRow.Parent = pageCombat
+		slotRow.Parent = pageAnim
 		local slotLay = Instance.new("UIListLayout")
 		slotLay.FillDirection = Enum.FillDirection.Horizontal
 		slotLay.VerticalAlignment = Enum.VerticalAlignment.Center
@@ -7623,6 +8249,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 		patBox:GetPropertyChangedSignal("Text"):Connect(function()
 			ESP.moveAnim.slotPattern[si] = patBox.Text
 		end)
+		ESP.moveAnim.slotPatBoxes[si] = patBox
 
 		local bindBtn = Instance.new("TextButton")
 		bindBtn.Size = UDim2.new(0, 52, 0, 28)
@@ -7651,7 +8278,7 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	end
 	K.refreshMoveAnimOverrideLabels()
 
-	K.addSectionLabel(pageCombat, "ANIMATION BLOCKER")
+	K.addSectionLabel(pageAnim, "ANIMATION BLOCKER")
 	local abNote = Instance.new("TextLabel")
 	abNote.BackgroundTransparency = 1
 	abNote.Font = Enum.Font.Gotham
@@ -7660,12 +8287,341 @@ function K.menuFillCombatTabHitboxAnim(pageCombat)
 	abNote.TextWrapped = true
 	abNote.TextColor3 = COL.muted
 	abNote.Text =
-		"Stops animation tracks on your character as soon as they start (local). Still allows: Combat preview, Create-tab anim slide, and move-anim replacement track. Expect T-pose / frozen pose if the game relies on Animate. Off while testing other anim tools if they look broken."
-	abNote.Size = UDim2.new(1, 0, 0, 52)
-	abNote.Parent = pageCombat
-	ESP.animBlock.toggleBtn = K.makeToggleButton(pageCombat, "Animation blocker: off", function()
+		"Stops animation tracks on your character as soon as they start (local). Still allows: Animation-tab preview, anim slide, walk replace, and move-anim replacement track. “Bound moves only” narrows the allow-list to your four Bind IDs plus hotbar-matched originals while move override is on."
+	abNote.Size = UDim2.new(1, 0, 0, 56)
+	abNote.Parent = pageAnim
+	ESP.animBlock.toggleBtn = K.makeToggleButton(pageAnim, "Animation blocker: off", function()
 		ESP.animBlock.on = not ESP.animBlock.on
 		K.setAnimBlockRunning()
+	end)
+	ESP.animBlock.movesOnlyBtn = K.makeToggleButton(pageAnim, "Blocker: only bound / override anims: off", function()
+		local any = false
+		for si = 1, 4 do
+			local rid = ESP.moveAnim.slotReplaceId[si]
+			if type(rid) == "string" and rid ~= "" then
+				any = true
+				break
+			end
+		end
+		if not any and not ESP.animBlock.movesOnlyMode then
+			warn("[TesterToolkit] Bind at least one slot (scanner row → Bind) before turning on “only bound” mode.")
+			return
+		end
+		ESP.animBlock.movesOnlyMode = not ESP.animBlock.movesOnlyMode
+		if ESP.animBlock.movesOnlyMode and not ESP.animBlock.on then
+			ESP.animBlock.on = true
+		end
+		K.setAnimBlockRunning()
+	end)
+
+	K.addSectionLabel(pageAnim, "WALK ANIM REPLACE")
+	local walkNote = Instance.new("TextLabel")
+	walkNote.BackgroundTransparency = 1
+	walkNote.Font = Enum.Font.Gotham
+	walkNote.TextSize = 10
+	walkNote.TextXAlignment = Enum.TextXAlignment.Left
+	walkNote.TextWrapped = true
+	walkNote.TextColor3 = COL.muted
+	walkNote.Text =
+		"Uses the scanner row or rbxasset id below. Loops only the time range [Start, End) seconds on the clip while you move; fully stops the clip when you stop walking (short fade). While moving, suppresses default Animate walk/run (Movement) tracks locally."
+	walkNote.Size = UDim2.new(1, 0, 0, 44)
+	walkNote.Parent = pageAnim
+
+	local walkIdBox = Instance.new("TextBox")
+	walkIdBox.Size = UDim2.new(1, 0, 0, 28)
+	walkIdBox.BackgroundColor3 = COL.inputBg
+	walkIdBox.TextColor3 = Color3.new(1, 1, 1)
+	walkIdBox.Font = Enum.Font.Gotham
+	walkIdBox.TextSize = 12
+	walkIdBox.PlaceholderText = "rbxassetid or paste full id"
+	walkIdBox.Text = CC.walkAnimId
+	walkIdBox.ClearTextOnFocus = false
+	walkIdBox.Parent = pageAnim
+	K.roundCorners(walkIdBox, 5)
+	walkIdBox:GetPropertyChangedSignal("Text"):Connect(function()
+		CC.walkAnimId = walkIdBox.Text
+	end)
+
+	K.makeToggleButton(pageAnim, "Use scanner-selected animation for walk", function()
+		if animScanSelected and animScanSelected:IsA("Animation") then
+			CC.walkAnimId = animScanSelected.AnimationId or ""
+			walkIdBox.Text = CC.walkAnimId
+		else
+			warn("[TesterToolkit] Pick an animation row in the scanner above first.")
+		end
+	end)
+
+	local walkRow = Instance.new("Frame")
+	walkRow.BackgroundTransparency = 1
+	walkRow.Size = UDim2.new(1, 0, 0, 30)
+	walkRow.Parent = pageAnim
+	local wLay = Instance.new("UIListLayout", walkRow)
+	wLay.FillDirection = Enum.FillDirection.Horizontal
+	wLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	wLay.Padding = UDim.new(0, 6)
+	local wLbl = Instance.new("TextLabel")
+	wLbl.BackgroundTransparency = 1
+	wLbl.Size = UDim2.new(1, -200, 1, 0)
+	wLbl.Font = Enum.Font.Gotham
+	wLbl.TextSize = 11
+	wLbl.TextXAlignment = Enum.TextXAlignment.Left
+	wLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+	wLbl.Text = "Loop start / end (sec)"
+	wLbl.Parent = walkRow
+	local function numBtn(delta, which)
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.fromOffset(28, 26)
+		b.Text = delta < 0 and "−" or "+"
+		b.Parent = walkRow
+		K.roundCorners(b, 4)
+		b.MouseButton1Click:Connect(function()
+			if which == "s" then
+				CC.walkAnimStart = math.max(0, CC.walkAnimStart + delta)
+			else
+				CC.walkAnimEnd = math.max(CC.walkAnimStart + 0.05, CC.walkAnimEnd + delta)
+			end
+			wLbl.Text = string.format("Loop start %.2f — end %.2f (sec)", CC.walkAnimStart, CC.walkAnimEnd)
+		end)
+		return b
+	end
+	numBtn(-0.05, "s")
+	numBtn(0.05, "s")
+	numBtn(-0.05, "e")
+	numBtn(0.05, "e")
+	wLbl.Text = string.format("Loop start %.2f — end %.2f (sec)", CC.walkAnimStart, CC.walkAnimEnd)
+
+	local spdWalkRow = Instance.new("Frame")
+	spdWalkRow.BackgroundTransparency = 1
+	spdWalkRow.Size = UDim2.new(1, 0, 0, 30)
+	spdWalkRow.Parent = pageAnim
+	local swLay = Instance.new("UIListLayout", spdWalkRow)
+	swLay.FillDirection = Enum.FillDirection.Horizontal
+	swLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	swLay.Padding = UDim.new(0, 6)
+	local swLbl = Instance.new("TextLabel")
+	swLbl.BackgroundTransparency = 1
+	swLbl.Size = UDim2.new(1, -140, 1, 0)
+	swLbl.Font = Enum.Font.Gotham
+	swLbl.TextSize = 11
+	swLbl.TextXAlignment = Enum.TextXAlignment.Left
+	swLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+	swLbl.Text = string.format("Walk clip speed: %.2f", CC.walkAnimSpeed)
+	swLbl.Parent = spdWalkRow
+	local swD = Instance.new("TextButton")
+	swD.Size = UDim2.fromOffset(32, 26)
+	swD.Text = "−"
+	swD.Parent = spdWalkRow
+	K.roundCorners(swD, 5)
+	swD.MouseButton1Click:Connect(function()
+		CC.walkAnimSpeed = math.max(0.1, CC.walkAnimSpeed - 0.1)
+		swLbl.Text = string.format("Walk clip speed: %.2f", CC.walkAnimSpeed)
+		if CC.walkAnimTrack then
+			pcall(function()
+				CC.walkAnimTrack:AdjustSpeed(CC.walkAnimSpeed)
+			end)
+		end
+	end)
+	local swU = Instance.new("TextButton")
+	swU.Size = UDim2.fromOffset(32, 26)
+	swU.Text = "+"
+	swU.Parent = spdWalkRow
+	K.roundCorners(swU, 5)
+	swU.MouseButton1Click:Connect(function()
+		CC.walkAnimSpeed = CC.walkAnimSpeed + 0.1
+		swLbl.Text = string.format("Walk clip speed: %.2f", CC.walkAnimSpeed)
+		if CC.walkAnimTrack then
+			pcall(function()
+				CC.walkAnimTrack:AdjustSpeed(CC.walkAnimSpeed)
+			end)
+		end
+	end)
+
+	CC.walkAnimToggleBtn = K.makeToggleButton(pageAnim, "Walk anim replace: off", function()
+		CC.walkAnimOn = not CC.walkAnimOn
+		CC.setWalkAnimRunning()
+	end)
+
+	K.addSectionLabel(pageAnim, "ANIM SLIDE (smooth move + anim)")
+	local idBox = Instance.new("TextBox")
+	idBox.Size = UDim2.new(1, 0, 0, 30)
+	idBox.BackgroundColor3 = COL.inputBg
+	idBox.TextColor3 = Color3.new(1, 1, 1)
+	idBox.Font = Enum.Font.Gotham
+	idBox.TextSize = 12
+	idBox.PlaceholderText = "Animation rbxassetid or paste full id"
+	idBox.Text = CC.animSlideId
+	idBox.ClearTextOnFocus = false
+	idBox.Parent = pageAnim
+	K.roundCorners(idBox, 6)
+	idBox:GetPropertyChangedSignal("Text"):Connect(function()
+		CC.animSlideId = idBox.Text
+	end)
+
+	K.makeToggleButton(pageAnim, "Use scanner-selected animation for slide", function()
+		if animScanSelected and animScanSelected:IsA("Animation") then
+			CC.animSlideId = animScanSelected.AnimationId or ""
+			idBox.Text = CC.animSlideId
+		else
+			warn("[TesterToolkit] Pick an animation row in the scanner above first.")
+		end
+	end)
+
+	local animSpdRow = Instance.new("Frame")
+	animSpdRow.BackgroundTransparency = 1
+	animSpdRow.Size = UDim2.new(1, 0, 0, 30)
+	animSpdRow.Parent = pageAnim
+	local asLay = Instance.new("UIListLayout", animSpdRow)
+	asLay.FillDirection = Enum.FillDirection.Horizontal
+	asLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	asLay.Padding = UDim.new(0, 6)
+	local asRead = Instance.new("TextLabel")
+	asRead.BackgroundTransparency = 1
+	asRead.Size = UDim2.new(1, -140, 1, 0)
+	asRead.Font = Enum.Font.Gotham
+	asRead.TextSize = 11
+	asRead.TextXAlignment = Enum.TextXAlignment.Left
+	asRead.TextColor3 = Color3.fromRGB(200, 205, 220)
+	asRead.Text = string.format("Anim / slide speed: %.2f", CC.animSlideAnimSpeed)
+	asRead.Parent = animSpdRow
+	local asDown = Instance.new("TextButton")
+	asDown.Size = UDim2.fromOffset(32, 26)
+	asDown.Text = "−"
+	asDown.Parent = animSpdRow
+	K.roundCorners(asDown, 5)
+	asDown.MouseButton1Click:Connect(function()
+		CC.animSlideAnimSpeed = CC.animSlideAnimSpeed - 0.1
+		asRead.Text = string.format("Anim / slide speed: %.2f", CC.animSlideAnimSpeed)
+	end)
+	local asUp = Instance.new("TextButton")
+	asUp.Size = UDim2.fromOffset(32, 26)
+	asUp.Text = "+"
+	asUp.Parent = animSpdRow
+	K.roundCorners(asUp, 5)
+	asUp.MouseButton1Click:Connect(function()
+		CC.animSlideAnimSpeed = CC.animSlideAnimSpeed + 0.1
+		asRead.Text = string.format("Anim / slide speed: %.2f", CC.animSlideAnimSpeed)
+	end)
+
+	local slideRunKeyBtn
+	local slideStopKeyBtn
+	slideRunKeyBtn = K.makeToggleButton(pageAnim, "Hotkey: run anim slide (click)", function()
+		CC.slideKeyListenMode = CC.slideKeyListenMode == "run" and false or "run"
+		K.refreshAnimSlideKeyBtns()
+	end)
+	slideStopKeyBtn = K.makeToggleButton(pageAnim, "Hotkey: stop anim slide (click)", function()
+		CC.slideKeyListenMode = CC.slideKeyListenMode == "stop" and false or "stop"
+		K.refreshAnimSlideKeyBtns()
+	end)
+	CC.slideRunKeyBtn = slideRunKeyBtn
+	CC.slideStopKeyBtn = slideStopKeyBtn
+	K.refreshAnimSlideKeyBtns()
+
+	local function axisBlock(title, key, step)
+		local row = Instance.new("Frame")
+		row.BackgroundTransparency = 1
+		row.Size = UDim2.new(1, 0, 0, 28)
+		row.Parent = pageAnim
+		local lay = Instance.new("UIListLayout", row)
+		lay.FillDirection = Enum.FillDirection.Horizontal
+		lay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+		lay.Padding = UDim.new(0, 6)
+		local lbl = Instance.new("TextLabel")
+		lbl.BackgroundTransparency = 1
+		lbl.Size = UDim2.new(1, -130, 1, 0)
+		lbl.Font = Enum.Font.Gotham
+		lbl.TextSize = 11
+		lbl.TextXAlignment = Enum.TextXAlignment.Left
+		lbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+		lbl.Text = title .. ": 0 studs"
+		lbl.Parent = row
+		local d = Instance.new("TextButton")
+		d.Size = UDim2.fromOffset(28, 24)
+		d.Text = "−"
+		d.Parent = row
+		K.roundCorners(d, 4)
+		local u = Instance.new("TextButton")
+		u.Size = UDim2.fromOffset(28, 24)
+		u.Text = "+"
+		u.Parent = row
+		K.roundCorners(u, 4)
+		local function sync()
+			lbl.Text = title .. ": " .. tostring(math.floor(CC[key] * 10) / 10) .. " studs"
+		end
+		d.MouseButton1Click:Connect(function()
+			CC[key] = CC[key] - step
+			sync()
+		end)
+		u.MouseButton1Click:Connect(function()
+			CC[key] = CC[key] + step
+			sync()
+		end)
+		sync()
+	end
+
+	axisBlock("Forward (look)", "animSlideFwd", 1)
+	axisBlock("Back", "animSlideBack", 1)
+	axisBlock("Right", "animSlideRight", 1)
+	axisBlock("Left", "animSlideLeft", 1)
+	axisBlock("Up", "animSlideUp", 1)
+	axisBlock("Down", "animSlideDown", 1)
+	local camDirBtn = K.makeToggleButton(pageAnim, "Slide uses camera direction: off", function(btn)
+		CC.animSlideUseCamera = not CC.animSlideUseCamera
+		btn.Text = CC.animSlideUseCamera and "Slide uses camera direction: on"
+			or "Slide uses camera direction: off"
+	end)
+	camDirBtn.Text = CC.animSlideUseCamera and "Slide uses camera direction: on"
+		or "Slide uses camera direction: off"
+
+	local durRow = Instance.new("Frame")
+	durRow.BackgroundTransparency = 1
+	durRow.Size = UDim2.new(1, 0, 0, 30)
+	durRow.Parent = pageAnim
+	local dLay = Instance.new("UIListLayout", durRow)
+	dLay.FillDirection = Enum.FillDirection.Horizontal
+	dLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	dLay.Padding = UDim.new(0, 6)
+	local durLbl = Instance.new("TextLabel")
+	durLbl.BackgroundTransparency = 1
+	durLbl.Size = UDim2.new(1, -140, 1, 0)
+	durLbl.Font = Enum.Font.Gotham
+	durLbl.TextSize = 11
+	durLbl.TextXAlignment = Enum.TextXAlignment.Left
+	durLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+	durLbl.Parent = durRow
+	local durDown = Instance.new("TextButton")
+	durDown.Size = UDim2.fromOffset(32, 26)
+	durDown.Text = "−"
+	durDown.Parent = durRow
+	K.roundCorners(durDown, 5)
+	local durUp = Instance.new("TextButton")
+	durUp.Size = UDim2.fromOffset(32, 26)
+	durUp.Text = "+"
+	durUp.Parent = durRow
+	K.roundCorners(durUp, 5)
+	local function durSync()
+		durLbl.Text = "Duration: " .. string.format("%.2fs", CC.animSlideDuration)
+	end
+	durDown.MouseButton1Click:Connect(function()
+		CC.animSlideDuration = CC.animSlideDuration - 0.15
+		durSync()
+	end)
+	durUp.MouseButton1Click:Connect(function()
+		CC.animSlideDuration = CC.animSlideDuration + 0.15
+		durSync()
+	end)
+	durSync()
+
+	local easeBtn = K.makeToggleButton(pageAnim, "Ease in/out (smoothstep)", function(btn)
+		CC.animSlideEase = not CC.animSlideEase
+		btn.Text = CC.animSlideEase and "Ease in/out (smoothstep): on" or "Ease in/out (smoothstep): off"
+	end)
+	easeBtn.Text = CC.animSlideEase and "Ease in/out (smoothstep): on" or "Ease in/out (smoothstep): off"
+
+	K.makeToggleButton(pageAnim, "▶ Run anim slide (your character)", function()
+		CC.runAnimSlide()
+	end)
+	K.makeToggleButton(pageAnim, "■ Stop anim slide", function()
+		CC.stopAnimSlide()
 	end)
 end
 
@@ -8264,7 +9220,7 @@ function K.menuFillCombatTab(pageCombat)
 		ESP.opSpinSpeed = v
 	end, 10, K.setOpCombatRunning)
 	K.refreshOpCombatUi()
-	K.menuFillCombatTabHitboxAnim(pageCombat)
+	K.menuFillCombatTabHitboxOnly(pageCombat)
 end
 
 function K.menuFillCustomizeTab(pageCustom, menuRefs)
@@ -9193,6 +10149,7 @@ function K.buildMenu()
 	local pageClient = K.makeMenuScrollPage("Client", contentHolder)
 	local pageTarget = K.makeMenuScrollPage("Target", contentHolder)
 	local pageCombat = K.makeMenuScrollPage("Combat", contentHolder)
+	local pageAnimation = K.makeMenuScrollPage("Animation", contentHolder)
 	local pageAbout = K.makeMenuScrollPage("About", contentHolder)
     local pageMacro = K.makeMenuScrollPage("Macro", contentHolder)
 	local pageCreate = K.makeMenuScrollPage("Create", contentHolder)
@@ -9202,6 +10159,7 @@ function K.buildMenu()
     pageClient.Visible = false
 	pageTarget.Visible = false
     pageCombat.Visible = false
+	pageAnimation.Visible = false
     pageAbout.Visible = false
     pageMacro.Visible = false
 	pageCreate.Visible = false
@@ -9214,8 +10172,9 @@ function K.buildMenu()
 		client = "Client",
 		target = "Target",
 		combat = "Combat",
-		macro = "Macro",
+		animation = "Animation",
 		create = "Create",
+		macro = "Macro",
 		about = "About",
 		custom = "Customize",
 	}
@@ -9258,10 +10217,11 @@ function K.buildMenu()
 	local tabClientBtn = makeNavTab("Client", 4)
 	local tabTargetBtn = makeNavTab("Target", 5)
 	local tabCombatBtn = makeNavTab("Combat", 6)
-	local tabCreateBtn = makeNavTab("Create", 7)
-	local tabMacroBtn = makeNavTab("Macro", 8)
-	local tabCustomBtn = makeNavTab("Customize", 9)
-	local tabAboutBtn = makeNavTab("About", 10)
+	local tabAnimationBtn = makeNavTab("Animation", 7)
+	local tabCreateBtn = makeNavTab("Create", 8)
+	local tabMacroBtn = makeNavTab("Macro", 9)
+	local tabCustomBtn = makeNavTab("Customize", 10)
+	local tabAboutBtn = makeNavTab("About", 11)
 
 	menuRefs.topBar = topBar
 	menuRefs.title = title
@@ -9277,6 +10237,7 @@ function K.buildMenu()
 		tabClientBtn,
 		tabTargetBtn,
 		tabCombatBtn,
+		tabAnimationBtn,
 		tabCreateBtn,
 		tabMacroBtn,
 		tabCustomBtn,
@@ -9290,6 +10251,7 @@ function K.buildMenu()
 		pageClient.Visible = which == "client"
 		pageTarget.Visible = which == "target"
 		pageCombat.Visible = which == "combat"
+		pageAnimation.Visible = which == "animation"
 		pageMacro.Visible = which == "macro"
 		pageCreate.Visible = which == "create"
 		pageAbout.Visible = which == "about"
@@ -9301,6 +10263,7 @@ function K.buildMenu()
 		tabStyle(tabClientBtn, which == "client")
 		tabStyle(tabTargetBtn, which == "target")
 		tabStyle(tabCombatBtn, which == "combat")
+		tabStyle(tabAnimationBtn, which == "animation")
 		tabStyle(tabMacroBtn, which == "macro")
 		tabStyle(tabCreateBtn, which == "create")
 		tabStyle(tabCustomBtn, which == "custom")
@@ -9325,6 +10288,9 @@ function K.buildMenu()
 	end)
 	tabCombatBtn.MouseButton1Click:Connect(function()
 		switchTab("combat")
+	end)
+	tabAnimationBtn.MouseButton1Click:Connect(function()
+		switchTab("animation")
 		K.refreshAnimTrackReadout()
 	end)
 	tabCreateBtn.MouseButton1Click:Connect(function()
@@ -9352,6 +10318,7 @@ function K.buildMenu()
 	K.menuFillClientTab(pageClient, screen)
 	K.menuFillTargetTab(pageTarget)
 	K.menuFillCombatTab(pageCombat)
+	K.menuFillAnimationTab(pageAnimation)
 	K.menuFillCustomizeTab(pageCustom, menuRefs)
 
 	
@@ -9382,7 +10349,7 @@ function K.buildMenu()
 	about2.TextWrapped = true
 	about2.TextColor3 = Color3.fromRGB(200, 205, 220)
 	about2.Text =
-		"Move, World, Client, Target, Combat, Create, Macro, Customize — local tools; Customize = theme, layout, always-on-top. Target = pick a player, fly-toward with optional ray dodge, or TP beside them. Create = fling, anim slide, freecam, orbit. Other players’ physics are usually server-owned."
+		"Move, World, Client, Target, Combat, Animation, Create, Macro, Customize — local tools; Customize = theme, layout, always-on-top. Animation = scanner, move override, blocker, walk replace, anim slide. Create = fling, freecam, orbit. Other players’ physics are usually server-owned."
 	about2.Size = UDim2.new(1, 0, 0, 48)
 	about2.Parent = pageAbout
 
@@ -9475,6 +10442,7 @@ UserInputService.InputBegan:Connect(function(input, gameUsedIt)
 			CC.slideStopKey = input.KeyCode
 			CC.slideKeyListenMode = false
 		end
+		K.refreshAnimSlideKeyBtns()
 		return
 	end
 	end
