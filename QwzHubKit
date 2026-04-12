@@ -284,22 +284,34 @@ local ESP = {
 	antiSlownessOn = false,
 	antiSlownessConn = nil,
 	cachedJumpHeight = nil,
+	speedCloneOn = false,
+	speedCloneConn = nil,
+	speedCloneDist = 4,
+	speedCloneEvery = 0.012,
+	speedCloneSlots = 4,
+	speedClonePhase = 0,
+	speedCloneNextT = 0,
+	speedCloneTogBtn = nil,
+	speedCloneStatLbl = nil,
 	moveAnim = {
 		on = false,
 		conn = nil,
-		animatorConns = {},
-		animChildConn = nil,
-		charDescConn = nil,
+		forceSeconds = 1.25,
+		forceUntil = 0,
+		forceTrack = nil,
+		forceDurLbl = nil,
+		forceClipStart = 0,
+		forceClipEnd = 0,
+		forceClipSpeed = 1,
+		forceClipStartLbl = nil,
+		forceClipEndLbl = nil,
+		forceClipSpdLbl = nil,
 		slotReplaceId = { "", "", "", "" },
 		slotPattern = { "projection breaker", "bleedout", "decisive strike", "cursory impact" },
 		slotPatBoxes = {},
-		activeReplaceTrack = nil,
 		toggleBtn = nil,
-		autoDetectBtn = nil,
-		forceOpenBackpackBtn = nil,
 		_uiTextBlacklist = nil,
 		replaceLbl = {},
-		_hookedAnimators = {},
 	},
 	animBlock = {
 		on = false,
@@ -312,9 +324,14 @@ local ESP = {
 		toggleBtn = nil,
 		movesOnlyBtn = nil,
 	},
+	animPreview = {
+		paused = false,
+		savedSpeed = 1,
+		timerConn = nil,
+		timeLbl = nil,
+		pauseBtn = nil,
+	},
 }
-
-ESP.moveAnim.marked = setmetatable({}, { __mode = "k" })
 
 -- ========= Macros =========
 local Macro = {
@@ -613,7 +630,7 @@ function K.afterPhysics()
 	end
 
 	-- Loop TP / orbit strafe / fling move the HRP in ways anti-TP treats as "teleports" — skip undo.
-	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress or ESP.autoForceTpOn or ESP.autoForceTpBurstRunning then
+	if loopTpOn or combatStrafeOn or ESP.speedCloneOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress or ESP.autoForceTpOn or ESP.autoForceTpBurstRunning then
 		K.saveSpot(r)
 		return
 	end
@@ -708,7 +725,7 @@ function K.heartbeatAgain()
 	if not antiTpOn then
 		return
 	end
-	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress or ESP.autoForceTpOn or ESP.autoForceTpBurstRunning then
+	if loopTpOn or combatStrafeOn or ESP.speedCloneOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress or ESP.autoForceTpOn or ESP.autoForceTpBurstRunning then
 		return
 	end
 	if strongMode then
@@ -728,7 +745,7 @@ function K.drawFrameAgain()
 	if not antiTpOn or not savedPivot then
 		return
 	end
-	if loopTpOn or combatStrafeOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress or ESP.autoForceTpOn or ESP.autoForceTpBurstRunning then
+	if loopTpOn or combatStrafeOn or ESP.speedCloneOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress or ESP.autoForceTpOn or ESP.autoForceTpBurstRunning then
 		return
 	end
 	local r = K.getRoot()
@@ -1167,6 +1184,78 @@ function K.setLoopWalkRunning()
 	else
 		K.stopLoopWalk()
 	end
+end
+
+function K.stopSpeedClone()
+	if ESP.speedCloneConn then
+		ESP.speedCloneConn:Disconnect()
+		ESP.speedCloneConn = nil
+	end
+	ESP.speedClonePhase = 0
+end
+
+function K.speedCloneStep()
+	if not ESP.speedCloneOn then
+		return
+	end
+	local r = K.getRoot()
+	local cam = K.getCam()
+	if not r or not cam then
+		return
+	end
+	local now = os.clock()
+	if now < ESP.speedCloneNextT then
+		return
+	end
+	ESP.speedCloneNextT = now + math.max(0.003, ESP.speedCloneEvery)
+	local n = math.clamp(math.floor(ESP.speedCloneSlots + 0.5), 2, 24)
+	ESP.speedClonePhase = (ESP.speedClonePhase + 1) % n
+	local t = ESP.speedClonePhase / math.max(1, n - 1)
+	local span = math.max(0.15, ESP.speedCloneDist)
+	local offset = (t * 2 - 1) * span
+	local right = cam.CFrame.RightVector
+	local flatRight = Vector3.new(right.X, 0, right.Z)
+	if flatRight.Magnitude < 0.08 then
+		flatRight = Vector3.new(r.CFrame.RightVector.X, 0, r.CFrame.RightVector.Z)
+	end
+	if flatRight.Magnitude < 0.05 then
+		flatRight = r.CFrame.RightVector
+	else
+		flatRight = flatRight.Unit
+	end
+	local rx, ry, rz = r.CFrame:ToOrientation()
+	local pos = r.Position + flatRight * offset
+	r.CFrame = CFrame.new(pos) * CFrame.fromOrientation(rx, ry, rz)
+	r.AssemblyLinearVelocity = Vector3.zero
+	r.AssemblyAngularVelocity = Vector3.zero
+end
+
+function K.refreshSpeedCloneStatLbl()
+	if ESP.speedCloneStatLbl then
+		local n = math.clamp(math.floor(ESP.speedCloneSlots + 0.5), 2, 24)
+		ESP.speedCloneStatLbl.Text = string.format(
+			"Clone slots: %d (more = more positions) | ±%.1f studs | %.3fs per step",
+			n,
+			ESP.speedCloneDist,
+			ESP.speedCloneEvery
+		)
+	end
+end
+
+function K.setSpeedCloneRunning()
+	if ESP.speedCloneOn then
+		K.stopSpeedClone()
+		ESP.speedCloneNextT = os.clock()
+		ESP.speedClonePhase = 0
+		ESP.speedCloneConn = RunService.RenderStepped:Connect(K.speedCloneStep)
+	else
+		K.stopSpeedClone()
+	end
+	if ESP.speedCloneTogBtn then
+		ESP.speedCloneTogBtn.Text = ESP.speedCloneOn and "Speed clone: on" or "Speed clone: off"
+	end
+	K.refreshSpeedCloneStatLbl()
+	K.refreshMoveLabels()
 end
 
 function K.stopAntiSlowness()
@@ -1756,7 +1845,90 @@ function K.getAnimTargetPlayer()
 	return list[animTargetIdx]
 end
 
+function K.stopAnimPreviewTimerUi()
+	local ap = ESP.animPreview
+	if ap.timerConn then
+		ap.timerConn:Disconnect()
+		ap.timerConn = nil
+	end
+	ap.paused = false
+	ap.savedSpeed = 1
+	if ap.timeLbl then
+		ap.timeLbl.Text = "Preview time: —"
+	end
+	if ap.pauseBtn then
+		ap.pauseBtn.Text = "Pause preview"
+	end
+end
+
+function K.animPreviewTick()
+	local ap = ESP.animPreview
+	local tr = animPlayingTrack
+	if not ap.timeLbl then
+		return
+	end
+	if not tr then
+		K.stopAnimPreviewTimerUi()
+		return
+	end
+	local okLen, len = pcall(function()
+		return tr.Length
+	end)
+	local okPos, t = pcall(function()
+		return tr.TimePosition
+	end)
+	if not okLen or not okPos then
+		K.stopAnimPreviewTimerUi()
+		return
+	end
+	len = type(len) == "number" and len or 0
+	t = type(t) == "number" and t or 0
+	local st = "stopped"
+	local okPlay, playing = pcall(function()
+		return tr.IsPlaying
+	end)
+	if okPlay and playing then
+		st = ap.paused and "paused" or "playing"
+	end
+	ap.timeLbl.Text = string.format("Preview time: %.3f / %.3f s  (%s)", t, len, st)
+end
+
+function K.startAnimPreviewTimerUi()
+	K.stopAnimPreviewTimerUi()
+	ESP.animPreview.timerConn = RunService.RenderStepped:Connect(K.animPreviewTick)
+	K.animPreviewTick()
+end
+
+function K.toggleAnimPreviewPause()
+	local tr = animPlayingTrack
+	if not tr or not tr.Parent then
+		return
+	end
+	local ap = ESP.animPreview
+	if ap.paused then
+		pcall(function()
+			tr:AdjustSpeed(ap.savedSpeed)
+		end)
+		ap.paused = false
+	else
+		ap.savedSpeed = 1
+		pcall(function()
+			local s = tr.Speed
+			if type(s) == "number" and s > 0 then
+				ap.savedSpeed = s
+			end
+			tr:AdjustSpeed(0)
+		end)
+		ap.paused = true
+	end
+	if ap.pauseBtn then
+		ap.pauseBtn.Text = ap.paused and "Resume preview" or "Pause preview"
+	end
+	K.animPreviewTick()
+end
+
 function K.stopPreviewTrack()
+	K.stopAnimPreviewTimerUi()
 	if animPlayingTrack then
 		pcall(function()
 			animPlayingTrack:Stop(0.1)
@@ -1797,6 +1969,15 @@ function K.playSelectedAnimOnTarget()
 		animPlayingTrack = track
 		track.Looped = false
 		track:Play(0.1, 1, 1)
+		pcall(function()
+			track.Stopped:Connect(function()
+				if animPlayingTrack == track then
+					animPlayingTrack = nil
+					K.stopAnimPreviewTimerUi()
+				end
+			end)
+		end)
+		K.startAnimPreviewTimerUi()
 	else
 		warn("[TesterToolkit] LoadAnimation failed (may be server-only anim).")
 	end
@@ -1818,18 +1999,47 @@ function K.refreshAnimTrackReadout()
 		animPlayingReadout.Text = "Playing tracks: (no character)"
 		return
 	end
-	local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-	local animator = hum and hum:FindFirstChildOfClass("Animator")
-	if not animator then
-		animPlayingReadout.Text = "Playing tracks: 0"
+	local char = plr.Character
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local tracks = {}
+	local seenAnim = {}
+	local function collectFromAnimator(animator)
+		if not animator then
+			return
+		end
+		for _, tr in ipairs(animator:GetPlayingAnimationTracks()) do
+			if tr.IsPlaying and tr.Animation and not seenAnim[tr.Animation] then
+				seenAnim[tr.Animation] = true
+				table.insert(tracks, tr)
+			end
+		end
+	end
+	if plr == me then
+		for _, d in char:GetDescendants() do
+			if d:IsA("Animator") then
+				collectFromAnimator(d)
+			end
+		end
+	else
+		collectFromAnimator(hum and hum:FindFirstChildOfClass("Animator"))
+	end
+	if #tracks == 0 then
+		animPlayingReadout.Text = "Playing tracks: 0 (all Animators on character)"
 		return
 	end
-	local tracks = animator:GetPlayingAnimationTracks()
 	local bits = {}
-	for i = 1, math.min(4, #tracks) do
+	for i = 1, math.min(6, #tracks) do
 		local tr = tracks[i]
 		local an = tr.Animation and tr.Animation.Name or "track"
-		table.insert(bits, string.format("%s %.2f", an, tr.TimePosition))
+		local idBit = ""
+		local animObj = tr.Animation
+		if animObj and animObj.AnimationId then
+			local digits = string.match(animObj.AnimationId, "(%d+)")
+			if digits then
+				idBit = " #" .. digits
+			end
+		end
+		table.insert(bits, string.format("%s %.2fs%s", an, tr.TimePosition, idBit))
 	end
 	animPlayingReadout.Text = "Playing: " .. tostring(#tracks) .. "  " .. table.concat(bits, " | ")
 end
@@ -1906,20 +2116,6 @@ function K.moveAnimBuildHaystack(anim)
 		anc = anc.Parent
 	end
 	return low
-end
-
-function K.moveAnimReplacementAnimator(sourceAnimator)
-	local hum = K.getHumanoid()
-	if hum and sourceAnimator and sourceAnimator:IsDescendantOf(hum.Parent) then
-		local main = hum:FindFirstChildOfClass("Animator")
-		if main then
-			return main
-		end
-		main = Instance.new("Animator")
-		main.Parent = hum
-		return main
-	end
-	return sourceAnimator
 end
 
 function K.moveAnimNormalizePatternText(s)
@@ -2443,285 +2639,211 @@ function K.moveAnimIdsMatch(a, b)
 	return string.lower(sa) == string.lower(sb)
 end
 
-function K.detachMoveAnimAnimatorHooks()
-	local m = ESP.moveAnim
-	for _, c in ipairs(m.animatorConns) do
-		pcall(function()
-			c:Disconnect()
-		end)
+function K.moveAnimPatternLooksLikeAssetId(pat)
+	if type(pat) ~= "string" then
+		return false
 	end
-	table.clear(m.animatorConns)
-	if m.animChildConn then
-		m.animChildConn:Disconnect()
-		m.animChildConn = nil
+	local p = pat:gsub("^%s+", ""):gsub("%s+$", "")
+	if p == "" then
+		return false
 	end
-	if m.charDescConn then
-		m.charDescConn:Disconnect()
-		m.charDescConn = nil
+	if string.find(string.lower(p), "rbxassetid", 1, true) then
+		return true
 	end
-	table.clear(m._hookedAnimators)
+	local digits = string.match(p, "(%d+)")
+	return digits ~= nil and #digits >= 7
 end
 
-function K.hookSingleAnimator(animator)
-	local m = ESP.moveAnim
-	if not animator or not m.on or m._hookedAnimators[animator] then
-		return
+function K.moveAnimSlotPatternMatches(rawPat, anim, hay, curId)
+	if type(rawPat) ~= "string" then
+		return false
 	end
-	local ok, conn = pcall(function()
-		return animator.AnimationPlayed:Connect(function(track)
-			if not m.on or flyOn or CC.freecamOn then
-				return
-			end
-			K.onMoveAnimTrackPlayed(track, animator)
-		end)
-	end)
-	if ok and conn then
-		m._hookedAnimators[animator] = true
-		table.insert(m.animatorConns, conn)
+	local pat = rawPat:gsub("^%s+", ""):gsub("%s+$", "")
+	if pat == "" then
+		return false
+	end
+	if K.moveAnimPatternLooksLikeAssetId(pat) then
+		return K.moveAnimIdsMatch(curId, pat)
+	end
+	local lowPat = K.moveAnimNormalizePatternText(pat)
+	if lowPat == "" then
+		return false
+	end
+	return string.find(hay, lowPat, 1, true) ~= nil
+end
+
+function K.syncForceDurationLabel()
+	local m = ESP.moveAnim
+	if m.forceDurLbl then
+		m.forceDurLbl.Text = string.format("Force hold time: %.2fs (keys 1-4)", m.forceSeconds)
 	end
 end
 
-function K.attachMoveAnimAnimatorHooks()
-	K.detachMoveAnimAnimatorHooks()
-	if not ESP.moveAnim.on then
-		return
-	end
-	local char = me.Character
-	local hum = K.getHumanoid()
-	if not char or not hum then
-		return
-	end
-	local function wireAllAnimators()
-		local a0 = hum:FindFirstChildOfClass("Animator")
-		if a0 then
-			K.hookSingleAnimator(a0)
-		end
-		for _, d in char:GetDescendants() do
-			if d:IsA("Animator") then
-				K.hookSingleAnimator(d)
-			end
-		end
-	end
-	wireAllAnimators()
-	ESP.moveAnim.animChildConn = hum.ChildAdded:Connect(function(ch)
-		if ch:IsA("Animator") and ESP.moveAnim.on then
-			K.hookSingleAnimator(ch)
-		end
-	end)
-	ESP.moveAnim.charDescConn = char.DescendantAdded:Connect(function(d)
-		if d:IsA("Animator") and ESP.moveAnim.on then
-			K.hookSingleAnimator(d)
-		end
-	end)
-end
-
-function K.onMoveAnimTrackPlayed(track, animator)
+function K.syncForceClipLabels()
 	local m = ESP.moveAnim
-	if not m.on or flyOn or CC.freecamOn then
-		return
+	if m.forceClipStartLbl then
+		m.forceClipStartLbl.Text = string.format("Clip start: %.2fs", m.forceClipStart)
 	end
-	local hum = K.getHumanoid()
-	if not hum or hum.Health <= 0 or not track then
-		return
-	end
-	local anim = track.Animation
-	if not anim then
-		return
-	end
-	local curId = anim.AnimationId or ""
-	local hay = K.moveAnimBuildHaystack(anim)
-	for si = 1, 4 do
-		local repl = m.slotReplaceId[si]
-		if repl ~= "" then
-			if K.moveAnimIdsMatch(curId, repl) then
-				return
-			end
-			local rawPat = m.slotPattern[si]
-			local pat = type(rawPat) == "string" and string.lower(rawPat) or ""
-			pat = pat:gsub("^%s+", ""):gsub("%s+$", "")
-			if pat ~= "" and string.find(hay, pat, 1, true) then
-				if m.marked[track] then
-					return
-				end
-				m.marked[track] = true
-				pcall(function()
-					track.Stopped:Connect(function()
-						m.marked[track] = nil
-					end)
-				end)
-				pcall(function()
-					track:Stop(0.05)
-				end)
-				task.defer(function()
-					if m.on and animator and animator.Parent then
-						K.playMoveAnimReplacement(animator, repl)
-					end
-				end)
-				return
-			end
+	if m.forceClipEndLbl then
+		if m.forceClipEnd <= 0 then
+			m.forceClipEndLbl.Text = "Clip end: full length (0 = use clip end)"
+		else
+			m.forceClipEndLbl.Text = string.format("Clip end: %.2fs", m.forceClipEnd)
 		end
+	end
+	if m.forceClipSpdLbl then
+		m.forceClipSpdLbl.Text = string.format("Clip speed: %.2fx", m.forceClipSpeed)
 	end
 end
 
 function K.stopMoveAnimOverride()
 	pcall(function()
-		RunService:UnbindFromRenderStep(MENU_NAME .. "_MoveAnimOv")
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_ForceSlot")
 	end)
-	K.detachMoveAnimAnimatorHooks()
 	if ESP.moveAnim.conn then
 		ESP.moveAnim.conn:Disconnect()
 		ESP.moveAnim.conn = nil
 	end
-	if ESP.moveAnim.activeReplaceTrack then
+	if ESP.moveAnim.forceTrack then
 		pcall(function()
-			ESP.moveAnim.activeReplaceTrack:Stop(0.1)
+			ESP.moveAnim.forceTrack:Stop(0.1)
 		end)
-		ESP.moveAnim.activeReplaceTrack = nil
+		ESP.moveAnim.forceTrack = nil
 	end
-	if ESP.moveAnim.marked then
-		table.clear(ESP.moveAnim.marked)
-	end
+	ESP.moveAnim.forceUntil = 0
 end
 
-function K.playMoveAnimReplacement(animator, animId)
-	if not animator or type(animId) ~= "string" or animId == "" then
+function K.forceAnimSlotMaintain()
+	local m = ESP.moveAnim
+	local tr = m.forceTrack
+	if not m.on or not tr or flyOn or CC.freecamOn then
+		K.stopMoveAnimOverride()
 		return
 	end
-	local playOn = K.moveAnimReplacementAnimator(animator)
-	if ESP.moveAnim.activeReplaceTrack then
-		pcall(function()
-			ESP.moveAnim.activeReplaceTrack:Stop(0.08)
-		end)
-		ESP.moveAnim.activeReplaceTrack = nil
-	end
-	local a = Instance.new("Animation")
-	a.AnimationId = animId
-	local ok, track = pcall(function()
-		return playOn:LoadAnimation(a)
-	end)
-	a:Destroy()
-	if not ok or not track then
-		local a2 = Instance.new("Animation")
-		a2.AnimationId = animId
-		ok, track = pcall(function()
-			return animator:LoadAnimation(a2)
-		end)
-		a2:Destroy()
-	end
-	if not ok or not track then
-		warn("[TesterToolkit] Move anim override: LoadAnimation failed (invalid id, private asset, or animator error).")
+	local hum = K.getHumanoid()
+	local char = me.Character
+	if not hum or not char or hum.Health <= 0 then
+		K.stopMoveAnimOverride()
 		return
 	end
-	track.Priority = Enum.AnimationPriority.Action4
-	track.Looped = false
-	ESP.moveAnim.activeReplaceTrack = track
-	track.Stopped:Connect(function()
-		if ESP.moveAnim.activeReplaceTrack == track then
-			ESP.moveAnim.activeReplaceTrack = nil
+	if os.clock() >= m.forceUntil then
+		K.stopMoveAnimOverride()
+		return
+	end
+	local function sweep(animator)
+		if not animator then
+			return
+		end
+		for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+			if t ~= tr then
+				pcall(function()
+					t:AdjustWeight(0, 0)
+					t:Stop(0)
+				end)
+			end
+		end
+	end
+	sweep(hum:FindFirstChildOfClass("Animator"))
+	for _, d in char:GetDescendants() do
+		if d:IsA("Animator") then
+			sweep(d)
+		end
+	end
+	pcall(function()
+		local spd = math.clamp(m.forceClipSpeed, 0.05, 8)
+		if not tr.IsPlaying then
+			tr:Play(0.02, 1, spd)
+		end
+		tr.Priority = Enum.AnimationPriority.Action4
+		tr:AdjustWeight(1, 0)
+		tr:AdjustSpeed(spd)
+		local len = tr.Length or 0
+		if len > 0.02 then
+			local a0 = math.clamp(m.forceClipStart, 0, len - 0.01)
+			local a1 = m.forceClipEnd
+			if a1 <= 0 or a1 > len then
+				a1 = len
+			end
+			if a1 <= a0 then
+				a1 = math.min(len, a0 + 0.1)
+			end
+			local tp = tr.TimePosition
+			if tp < a0 or tp >= a1 then
+				tr.TimePosition = a0
+			end
 		end
 	end)
-	pcall(function()
-		track:Play(0.05, 1, 1)
-	end)
 end
 
-function K.moveAnimOverrideStep()
+function K.playForceAnimSlot(slotIdx)
 	if not ESP.moveAnim.on then
 		return
 	end
 	if flyOn or CC.freecamOn then
 		return
 	end
+	local id = ESP.moveAnim.slotReplaceId[slotIdx]
+	if type(id) ~= "string" or id == "" then
+		warn("[TesterToolkit] Slot " .. tostring(slotIdx) .. ": pick a row in the scanner, then Bind.")
+		return
+	end
+	K.stopMoveAnimOverride()
 	local hum = K.getHumanoid()
-	if not hum or hum.Health <= 0 then
-		return
-	end
 	local char = me.Character
-	if not char then
+	if not hum or not char or hum.Health <= 0 then
 		return
 	end
+	local animator = hum:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Parent = hum
+	end
+	local a = Instance.new("Animation")
+	a.AnimationId = id
+	local ok, track = pcall(function()
+		return animator:LoadAnimation(a)
+	end)
+	a:Destroy()
+	if not ok or not track then
+		warn("[TesterToolkit] Force slot: LoadAnimation failed (bad id or permissions).")
+		return
+	end
+	track.Priority = Enum.AnimationPriority.Action4
+	track.Looped = true
 	local m = ESP.moveAnim
-	local function processAnimator(animator)
-		if not animator then
-			return
+	local spd = math.clamp(m.forceClipSpeed, 0.05, 8)
+	pcall(function()
+		track:Play(0.02, 1, spd)
+		track:AdjustWeight(1, 0.02)
+		track:AdjustSpeed(spd)
+		local len = track.Length or 0
+		if len > 0.02 then
+			local a0 = math.clamp(m.forceClipStart, 0, len - 0.01)
+			track.TimePosition = a0
 		end
-		local tracks = animator:GetPlayingAnimationTracks()
-		for _, tr in ipairs(tracks) do
-			if tr.IsPlaying then
-				local an = tr.Animation
-				if an then
-					local hay = K.moveAnimBuildHaystack(an)
-					for si = 1, 4 do
-						local repl = m.slotReplaceId[si]
-						if repl ~= "" then
-							if K.moveAnimIdsMatch(an.AnimationId or "", repl) then
-								break
-							end
-							local rawPat = m.slotPattern[si]
-							local pat = type(rawPat) == "string" and string.lower(rawPat) or ""
-							pat = pat:gsub("^%s+", ""):gsub("%s+$", "")
-							if pat ~= "" and string.find(hay, pat, 1, true) then
-								if not m.marked[tr] then
-									m.marked[tr] = true
-									pcall(function()
-										tr.Stopped:Connect(function()
-											m.marked[tr] = nil
-										end)
-									end)
-									pcall(function()
-										tr:Stop(0.05)
-									end)
-									task.defer(function()
-										if m.on and animator and animator.Parent then
-											K.playMoveAnimReplacement(animator, repl)
-										end
-									end)
-								end
-								break
-							end
-						end
-					end
-				end
-			end
-		end
-	end
-	local humAnim = hum:FindFirstChildOfClass("Animator")
-	if not humAnim then
-		humAnim = Instance.new("Animator")
-		humAnim.Parent = hum
-	end
-	processAnimator(humAnim)
-	for _, d in char:GetDescendants() do
-		if d:IsA("Animator") then
-			processAnimator(d)
-		end
+	end)
+	ESP.moveAnim.forceTrack = track
+	ESP.moveAnim.forceUntil = os.clock() + math.clamp(ESP.moveAnim.forceSeconds, 0.05, 60)
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_ForceSlot")
+	end)
+	local bound = pcall(function()
+		RunService:BindToRenderStep(MENU_NAME .. "_ForceSlot", 2147483646, K.forceAnimSlotMaintain)
+	end)
+	if not bound then
+		ESP.moveAnim.conn = RunService.RenderStepped:Connect(K.forceAnimSlotMaintain)
 	end
 end
 
 function K.setMoveAnimOverrideRunning()
-	if ESP.moveAnim.on then
-		K.stopMoveAnimOverride()
-		K.attachMoveAnimAnimatorHooks()
-		if #ESP.moveAnim.animatorConns == 0 then
-			local stepName = MENU_NAME .. "_MoveAnimOv"
-			local bound = pcall(function()
-				RunService:BindToRenderStep(stepName, Enum.RenderPriority.Last.Value, K.moveAnimOverrideStep)
-			end)
-			if not bound then
-				bound = pcall(function()
-					RunService:BindToRenderStep(stepName, RENDER_LAST, K.moveAnimOverrideStep)
-				end)
-			end
-			if not bound then
-				ESP.moveAnim.conn = RunService.Heartbeat:Connect(K.moveAnimOverrideStep)
-			end
-		end
-	else
+	if not ESP.moveAnim.on then
 		K.stopMoveAnimOverride()
 	end
 	if ESP.moveAnim.toggleBtn then
-		ESP.moveAnim.toggleBtn.Text = ESP.moveAnim.on and "Move anim override: on" or "Move anim override: off"
+		ESP.moveAnim.toggleBtn.Text = ESP.moveAnim.on and "Force slots (keys 1-4): on" or "Force slots (keys 1-4): off"
 	end
+	K.syncForceDurationLabel()
+	K.syncForceClipLabels()
 end
 
 function K.animBlockShouldAllow(track)
@@ -2737,7 +2859,7 @@ function K.animBlockShouldAllow(track)
 	if CC.walkAnimTrack and track == CC.walkAnimTrack then
 		return true
 	end
-	if ESP.moveAnim.activeReplaceTrack == track then
+	if ESP.moveAnim.forceTrack and track == ESP.moveAnim.forceTrack then
 		return true
 	end
 	if ESP.animBlock.movesOnlyMode then
@@ -2752,17 +2874,13 @@ function K.animBlockShouldAllow(track)
 				return true
 			end
 		end
-		if ESP.moveAnim.on then
-			local hay = K.moveAnimBuildHaystack(anim)
-			for si = 1, 4 do
-				local repl = ESP.moveAnim.slotReplaceId[si]
-				if type(repl) == "string" and repl ~= "" then
-					local rawPat = ESP.moveAnim.slotPattern[si]
-					local pat = type(rawPat) == "string" and K.moveAnimNormalizePatternText(rawPat) or ""
-					pat = pat:gsub("^%s+", ""):gsub("%s+$", "")
-					if pat ~= "" and string.find(hay, pat, 1, true) then
-						return true
-					end
+		local hay = K.moveAnimBuildHaystack(anim)
+		for si = 1, 4 do
+			local repl = ESP.moveAnim.slotReplaceId[si]
+			if type(repl) == "string" and repl ~= "" then
+				local rawPat = ESP.moveAnim.slotPattern[si]
+				if K.moveAnimSlotPatternMatches(rawPat or "", anim, hay, id) then
+					return true
 				end
 			end
 		end
@@ -2804,6 +2922,7 @@ function K.hookSingleAnimatorForBlock(animator)
 				return
 			end
 			pcall(function()
+				track:AdjustWeight(0, 0)
 				track:Stop(0)
 			end)
 		end)
@@ -2865,8 +2984,9 @@ function K.animBlockStep()
 			return
 		end
 		for _, tr in ipairs(animator:GetPlayingAnimationTracks()) do
-			if tr.IsPlaying and not K.animBlockShouldAllow(tr) then
+			if not K.animBlockShouldAllow(tr) then
 				pcall(function()
+					tr:AdjustWeight(0, 0)
 					tr:Stop(0)
 				end)
 			end
@@ -2888,6 +3008,9 @@ function K.stopAnimBlock()
 		ESP.animBlock.conn:Disconnect()
 		ESP.animBlock.conn = nil
 	end
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_AnimBlk")
+	end)
 	K.detachAnimBlockHooks()
 end
 
@@ -2895,7 +3018,12 @@ function K.setAnimBlockRunning()
 	if ESP.animBlock.on then
 		K.stopAnimBlock()
 		K.attachAnimBlockHooks()
-		ESP.animBlock.conn = RunService.Heartbeat:Connect(K.animBlockStep)
+		local bound = pcall(function()
+			RunService:BindToRenderStep(MENU_NAME .. "_AnimBlk", 2147483645, K.animBlockStep)
+		end)
+		if not bound then
+			ESP.animBlock.conn = RunService.RenderStepped:Connect(K.animBlockStep)
+		end
 	else
 		K.stopAnimBlock()
 	end
@@ -6640,6 +6768,153 @@ function K.menuFillMoveTab(pageMove)
 		K.refreshMoveLabels()
 	end)
 
+	K.addSectionLabel(pageMove, "SPEED CLONE")
+	local scNote = Instance.new("TextLabel")
+	scNote.BackgroundTransparency = 1
+	scNote.Font = Enum.Font.Gotham
+	scNote.TextSize = 11
+	scNote.TextXAlignment = Enum.TextXAlignment.Left
+	scNote.TextColor3 = COL.muted
+	scNote.Text = "Fast loop-teleport on camera-flat left/right (more slots = more clone-like positions). Anti-TP skips while active."
+	scNote.Size = UDim2.new(1, 0, 0, 36)
+	scNote.TextWrapped = true
+	scNote.Parent = pageMove
+	ESP.speedCloneStatLbl = Instance.new("TextLabel")
+	ESP.speedCloneStatLbl.BackgroundTransparency = 1
+	ESP.speedCloneStatLbl.Font = Enum.Font.Gotham
+	ESP.speedCloneStatLbl.TextSize = 12
+	ESP.speedCloneStatLbl.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.speedCloneStatLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.speedCloneStatLbl.Size = UDim2.new(1, 0, 0, 22)
+	ESP.speedCloneStatLbl.Parent = pageMove
+	local scRow1 = Instance.new("Frame")
+	scRow1.BackgroundTransparency = 1
+	scRow1.Size = UDim2.new(1, 0, 0, 32)
+	scRow1.Parent = pageMove
+	local scLay1 = Instance.new("UIListLayout")
+	scLay1.FillDirection = Enum.FillDirection.Horizontal
+	scLay1.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	scLay1.Padding = UDim.new(0, 8)
+	scLay1.Parent = scRow1
+	ESP.speedCloneTogBtn = Instance.new("TextButton")
+	ESP.speedCloneTogBtn.Text = "Speed clone: off"
+	ESP.speedCloneTogBtn.Size = UDim2.new(1, -80, 1, 0)
+	ESP.speedCloneTogBtn.Font = Enum.Font.GothamBold
+	ESP.speedCloneTogBtn.TextSize = 12
+	ESP.speedCloneTogBtn.TextColor3 = Color3.new(1, 1, 1)
+	ESP.speedCloneTogBtn.BackgroundColor3 = COL.btn
+	ESP.speedCloneTogBtn.BorderSizePixel = 0
+	ESP.speedCloneTogBtn.Parent = scRow1
+	K.roundCorners(ESP.speedCloneTogBtn, 6)
+	ESP.speedCloneTogBtn.MouseButton1Click:Connect(function()
+		ESP.speedCloneOn = not ESP.speedCloneOn
+		K.setSpeedCloneRunning()
+	end)
+	local scReset = Instance.new("TextButton")
+	scReset.Text = "Reset"
+	scReset.Size = UDim2.fromOffset(72, 28)
+	scReset.Font = Enum.Font.GothamBold
+	scReset.TextSize = 12
+	scReset.TextColor3 = Color3.new(1, 1, 1)
+	scReset.BackgroundColor3 = COL.btn
+	scReset.BorderSizePixel = 0
+	scReset.Parent = scRow1
+	K.roundCorners(scReset, 6)
+	scReset.MouseButton1Click:Connect(function()
+		ESP.speedCloneOn = false
+		ESP.speedCloneDist = 4
+		ESP.speedCloneEvery = 0.012
+		ESP.speedCloneSlots = 4
+		K.setSpeedCloneRunning()
+	end)
+	local function scNumRow(title, get, set, stepDn, minV, maxV)
+		local row = Instance.new("Frame")
+		row.BackgroundTransparency = 1
+		row.Size = UDim2.new(1, 0, 0, 30)
+		row.Parent = pageMove
+		local lay = Instance.new("UIListLayout")
+		lay.FillDirection = Enum.FillDirection.Horizontal
+		lay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+		lay.Padding = UDim.new(0, 6)
+		lay.Parent = row
+		local lbl = Instance.new("TextLabel")
+		lbl.BackgroundTransparency = 1
+		lbl.Size = UDim2.new(1, -88, 1, 0)
+		lbl.Font = Enum.Font.Gotham
+		lbl.TextSize = 11
+		lbl.TextXAlignment = Enum.TextXAlignment.Left
+		lbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+		lbl.Text = title
+		lbl.Parent = row
+		local d = Instance.new("TextButton")
+		d.Size = UDim2.fromOffset(36, 26)
+		d.Text = "−"
+		d.Font = Enum.Font.GothamBold
+		d.TextSize = 14
+		d.TextColor3 = Color3.new(1, 1, 1)
+		d.BackgroundColor3 = COL.btn
+		d.BorderSizePixel = 0
+		d.Parent = row
+		K.roundCorners(d, 5)
+		local u = Instance.new("TextButton")
+		u.Size = UDim2.fromOffset(36, 26)
+		u.Text = "+"
+		u.Font = Enum.Font.GothamBold
+		u.TextSize = 14
+		u.TextColor3 = Color3.new(1, 1, 1)
+		u.BackgroundColor3 = COL.btn
+		u.BorderSizePixel = 0
+		u.Parent = row
+		K.roundCorners(u, 5)
+		local function bump(delta)
+			set(math.clamp(get() + delta, minV, maxV))
+			K.refreshSpeedCloneStatLbl()
+		end
+		d.MouseButton1Click:Connect(function()
+			bump(-stepDn)
+		end)
+		u.MouseButton1Click:Connect(function()
+			bump(stepDn)
+		end)
+	end
+	scNumRow(
+		"Clone slots (positions along the line)",
+		function()
+			return ESP.speedCloneSlots
+		end,
+		function(v)
+			ESP.speedCloneSlots = v
+		end,
+		1,
+		2,
+		24
+	)
+	scNumRow(
+		"Half-width ± studs",
+		function()
+			return ESP.speedCloneDist
+		end,
+		function(v)
+			ESP.speedCloneDist = v
+		end,
+		0.5,
+		0.15,
+		48
+	)
+	scNumRow(
+		"Seconds per teleport step",
+		function()
+			return ESP.speedCloneEvery
+		end,
+		function(v)
+			ESP.speedCloneEvery = v
+		end,
+		0.002,
+		0.003,
+		0.12
+	)
+	K.refreshSpeedCloneStatLbl()
+
 	ESP.labels.move.jump = Instance.new("TextLabel")
 	ESP.labels.move.jump.BackgroundTransparency = 1
 	ESP.labels.move.jump.Font = Enum.Font.Gotham
@@ -8190,7 +8465,22 @@ function K.menuFillAnimationTab(pageAnim)
 	animPlayingReadout.Text = "Playing tracks: (open Animation tab, pick player, tap Tracks)"
 	animPlayingReadout.Parent = pageAnim
 
-	K.addSectionLabel(pageAnim, "MOVE ANIM OVERRIDE (hotbar)")
+	local apTime = Instance.new("TextLabel")
+	apTime.BackgroundTransparency = 1
+	apTime.Size = UDim2.new(1, 0, 0, 22)
+	apTime.Font = Enum.Font.GothamBold
+	apTime.TextSize = 11
+	apTime.TextXAlignment = Enum.TextXAlignment.Left
+	apTime.TextColor3 = Color3.fromRGB(180, 220, 200)
+	apTime.Text = "Preview time: —"
+	apTime.Parent = pageAnim
+	ESP.animPreview.timeLbl = apTime
+
+	ESP.animPreview.pauseBtn = K.makeToggleButton(pageAnim, "Pause preview", function()
+		K.toggleAnimPreviewPause()
+	end)
+
+	K.addSectionLabel(pageAnim, "FORCE SLOTS (keys 1-4)")
 	local movNote = Instance.new("TextLabel")
 	movNote.BackgroundTransparency = 1
 	movNote.Font = Enum.Font.Gotham
@@ -8199,18 +8489,154 @@ function K.menuFillAnimationTab(pageAnim)
 	movNote.TextWrapped = true
 	movNote.TextColor3 = COL.muted
 	movNote.Text =
-		"Uses Animator.AnimationPlayed (fires when a move starts). Match text checks Animation name, full path, Tool ancestry, StringValues, and rbxasset id — if defaults never fire, pick yourself as target, use a move, tap Tracks, then paste part of the id or path into the slot.\nAuto-detect prefers real Tool names from Backpack/Character (most reliable). GUI fallback only uses labels under paths containing hotbar/skillbar/actionbar/etc., plus a junk-word filter. “Force backpack” re-enables Core backpack and tries to open it (` key). Bind = replacement from the scanner. Local visuals only."
-	movNote.Size = UDim2.new(1, 0, 0, 76)
+		"Turn ON, Bind each slot, set hold time + clip window (start/end/speed) below, then keys 1-4 (not while typing or Macro record). Other tracks are stopped each frame; forced clip loops between start/end times at your speed until hold expires."
+	movNote.Size = UDim2.new(1, 0, 0, 52)
 	movNote.Parent = pageAnim
 
-	ESP.moveAnim.toggleBtn = K.makeToggleButton(pageAnim, "Move anim override: off", function()
+	ESP.moveAnim.toggleBtn = K.makeToggleButton(pageAnim, "Force slots (keys 1-4): off", function()
 		ESP.moveAnim.on = not ESP.moveAnim.on
 		K.setMoveAnimOverrideRunning()
 	end)
-	ESP.moveAnim.autoDetectBtn = K.makeToggleButton(pageAnim, "Auto-detect hotbar / tool names", function()
-		K.autoDetectMoveAnimSlotPatterns()
+
+	local durRow = Instance.new("Frame")
+	durRow.BackgroundTransparency = 1
+	durRow.Size = UDim2.new(1, 0, 0, 32)
+	durRow.Parent = pageAnim
+	local durLay = Instance.new("UIListLayout")
+	durLay.FillDirection = Enum.FillDirection.Horizontal
+	durLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	durLay.Padding = UDim.new(0, 8)
+	durLay.Parent = durRow
+	local durLbl = Instance.new("TextLabel")
+	durLbl.BackgroundTransparency = 1
+	durLbl.Size = UDim2.new(1, -100, 1, 0)
+	durLbl.Font = Enum.Font.Gotham
+	durLbl.TextSize = 11
+	durLbl.TextXAlignment = Enum.TextXAlignment.Left
+	durLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+	durLbl.Text = "Force hold time: 1.25s (keys 1-4)"
+	durLbl.Parent = durRow
+	ESP.moveAnim.forceDurLbl = durLbl
+	local durDown = Instance.new("TextButton")
+	durDown.Text = "−"
+	durDown.Size = UDim2.fromOffset(36, 28)
+	durDown.Font = Enum.Font.GothamBold
+	durDown.TextSize = 16
+	durDown.TextColor3 = Color3.new(1, 1, 1)
+	durDown.BackgroundColor3 = COL.btn
+	durDown.BorderSizePixel = 0
+	durDown.Parent = durRow
+	durDown:SetAttribute("KitStepBtn", true)
+	K.roundCorners(durDown, 6)
+	durDown.MouseButton1Click:Connect(function()
+		ESP.moveAnim.forceSeconds = math.clamp(ESP.moveAnim.forceSeconds - 0.1, 0.05, 60)
+		K.syncForceDurationLabel()
 	end)
-	ESP.moveAnim.forceOpenBackpackBtn = K.makeToggleButton(pageAnim, "Force backpack / Core hotbar", function()
+	local durUp = Instance.new("TextButton")
+	durUp.Text = "+"
+	durUp.Size = UDim2.fromOffset(36, 28)
+	durUp.Font = Enum.Font.GothamBold
+	durUp.TextSize = 16
+	durUp.TextColor3 = Color3.new(1, 1, 1)
+	durUp.BackgroundColor3 = COL.btn
+	durUp.BorderSizePixel = 0
+	durUp.Parent = durRow
+	durUp:SetAttribute("KitStepBtn", true)
+	K.roundCorners(durUp, 6)
+	durUp.MouseButton1Click:Connect(function()
+		ESP.moveAnim.forceSeconds = math.clamp(ESP.moveAnim.forceSeconds + 0.1, 0.05, 60)
+		K.syncForceDurationLabel()
+	end)
+	K.syncForceDurationLabel()
+
+	K.addSectionLabel(pageAnim, "FORCE CLIP (start / end / speed)")
+	local clipHint = Instance.new("TextLabel")
+	clipHint.BackgroundTransparency = 1
+	clipHint.Font = Enum.Font.Gotham
+	clipHint.TextSize = 10
+	clipHint.TextXAlignment = Enum.TextXAlignment.Left
+	clipHint.TextWrapped = true
+	clipHint.TextColor3 = COL.muted
+	clipHint.Text = "While a force slot runs, TimePosition stays in [start, end). End 0 = use the clip’s full Length. Speed is playback multiplier (AdjustSpeed)."
+	clipHint.Size = UDim2.new(1, 0, 0, 36)
+	clipHint.Parent = pageAnim
+
+	local function clipNumRow(titleKey, get, set, step)
+		local row = Instance.new("Frame")
+		row.BackgroundTransparency = 1
+		row.Size = UDim2.new(1, 0, 0, 30)
+		row.Parent = pageAnim
+		local lay = Instance.new("UIListLayout")
+		lay.FillDirection = Enum.FillDirection.Horizontal
+		lay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+		lay.Padding = UDim.new(0, 6)
+		lay.Parent = row
+		local lbl = Instance.new("TextLabel")
+		lbl.BackgroundTransparency = 1
+		lbl.Size = UDim2.new(1, -88, 1, 0)
+		lbl.Font = Enum.Font.Gotham
+		lbl.TextSize = 11
+		lbl.TextXAlignment = Enum.TextXAlignment.Left
+		lbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+		lbl.Parent = row
+		if titleKey == "start" then
+			ESP.moveAnim.forceClipStartLbl = lbl
+		elseif titleKey == "end" then
+			ESP.moveAnim.forceClipEndLbl = lbl
+		else
+			ESP.moveAnim.forceClipSpdLbl = lbl
+		end
+		local d = Instance.new("TextButton")
+		d.Size = UDim2.fromOffset(32, 26)
+		d.Text = "−"
+		d.Font = Enum.Font.GothamBold
+		d.TextSize = 14
+		d.BackgroundColor3 = COL.btn
+		d.BorderSizePixel = 0
+		d:SetAttribute("KitStepBtn", true)
+		d.Parent = row
+		K.roundCorners(d, 5)
+		local u = Instance.new("TextButton")
+		u.Size = UDim2.fromOffset(32, 26)
+		u.Text = "+"
+		u.Font = Enum.Font.GothamBold
+		u.TextSize = 14
+		u.BackgroundColor3 = COL.btn
+		u.BorderSizePixel = 0
+		u:SetAttribute("KitStepBtn", true)
+		u.Parent = row
+		K.roundCorners(u, 5)
+		d.MouseButton1Click:Connect(function()
+			set(get() - step)
+			K.syncForceClipLabels()
+		end)
+		u.MouseButton1Click:Connect(function()
+			set(get() + step)
+			K.syncForceClipLabels()
+		end)
+	end
+
+	clipNumRow("start", function()
+		return ESP.moveAnim.forceClipStart
+	end, function(v)
+		ESP.moveAnim.forceClipStart = math.max(0, v)
+	end, 0.05)
+
+	clipNumRow("end", function()
+		return ESP.moveAnim.forceClipEnd
+	end, function(v)
+		ESP.moveAnim.forceClipEnd = math.max(0, v)
+	end, 0.05)
+
+	clipNumRow("spd", function()
+		return ESP.moveAnim.forceClipSpeed
+	end, function(v)
+		ESP.moveAnim.forceClipSpeed = math.clamp(v, 0.05, 8)
+	end, 0.1)
+
+	K.syncForceClipLabels()
+
+	K.makeToggleButton(pageAnim, "Open Core backpack (help find tools)", function()
 		K.forceEnableAndOpenBackpack()
 	end)
 
@@ -8228,20 +8654,21 @@ function K.menuFillAnimationTab(pageAnim)
 
 		local idxLbl = Instance.new("TextLabel")
 		idxLbl.BackgroundTransparency = 1
-		idxLbl.Size = UDim2.new(0, 22, 0, 28)
+		idxLbl.Size = UDim2.new(0, 76, 0, 28)
 		idxLbl.Font = Enum.Font.GothamBold
-		idxLbl.TextSize = 12
+		idxLbl.TextSize = UserInputService.TouchEnabled and 11 or 12
 		idxLbl.TextXAlignment = Enum.TextXAlignment.Left
 		idxLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
-		idxLbl.Text = tostring(si) .. "."
+		idxLbl.Text = tostring(si) .. " (key " .. tostring(si) .. ")"
 		idxLbl.Parent = slotRow
 
 		local patBox = Instance.new("TextBox")
-		patBox.Size = UDim2.new(0, UserInputService.TouchEnabled and 150 or 128, 0, 28)
+		patBox.Size = UDim2.new(0, UserInputService.TouchEnabled and 130 or 108, 0, 28)
 		patBox.BackgroundColor3 = COL.inputBg
 		patBox.TextColor3 = Color3.new(1, 1, 1)
 		patBox.Font = Enum.Font.Gotham
 		patBox.TextSize = UserInputService.TouchEnabled and 12 or 11
+		patBox.PlaceholderText = "blocker only"
 		patBox.Text = ESP.moveAnim.slotPattern[si]
 		patBox.ClearTextOnFocus = false
 		patBox.Parent = slotRow
@@ -8287,7 +8714,7 @@ function K.menuFillAnimationTab(pageAnim)
 	abNote.TextWrapped = true
 	abNote.TextColor3 = COL.muted
 	abNote.Text =
-		"Stops animation tracks on your character as soon as they start (local). Still allows: Animation-tab preview, anim slide, walk replace, and move-anim replacement track. “Bound moves only” narrows the allow-list to your four Bind IDs plus hotbar-matched originals while move override is on."
+		"Stops disallowed tracks immediately (RenderStep + AnimationPlayed; weight 0 + Stop). Allows: scanner preview, anim slide, walk replace, and active Force-slot track. “Bound moves only” allows only your four Bind IDs plus optional pattern matches in each slot row."
 	abNote.Size = UDim2.new(1, 0, 0, 56)
 	abNote.Parent = pageAnim
 	ESP.animBlock.toggleBtn = K.makeToggleButton(pageAnim, "Animation blocker: off", function()
@@ -10319,6 +10746,7 @@ function K.buildMenu()
 	K.menuFillTargetTab(pageTarget)
 	K.menuFillCombatTab(pageCombat)
 	K.menuFillAnimationTab(pageAnimation)
+	K.syncForceDurationLabel()
 	K.menuFillCustomizeTab(pageCustom, menuRefs)
 
 	
@@ -10349,7 +10777,7 @@ function K.buildMenu()
 	about2.TextWrapped = true
 	about2.TextColor3 = Color3.fromRGB(200, 205, 220)
 	about2.Text =
-		"Move, World, Client, Target, Combat, Animation, Create, Macro, Customize — local tools; Customize = theme, layout, always-on-top. Animation = scanner, move override, blocker, walk replace, anim slide. Create = fling, freecam, orbit. Other players’ physics are usually server-owned."
+		"Move, World, Client, Target, Combat, Animation, Create, Macro, Customize — local tools; Customize = theme, layout, always-on-top. Animation = scanner, force slots (keys 1-4), blocker, walk replace, anim slide. Create = fling, freecam, orbit. Other players’ physics are usually server-owned."
 	about2.Size = UDim2.new(1, 0, 0, 48)
 	about2.Parent = pageAbout
 
@@ -10483,6 +10911,22 @@ UserInputService.InputBegan:Connect(function(input, gameUsedIt)
 	if K.getFocusedTextBox() then
 		return
 	end
+	if not Macro.recording and ESP.moveAnim.on then
+		local slotIdx = nil
+		if input.KeyCode == Enum.KeyCode.One then
+			slotIdx = 1
+		elseif input.KeyCode == Enum.KeyCode.Two then
+			slotIdx = 2
+		elseif input.KeyCode == Enum.KeyCode.Three then
+			slotIdx = 3
+		elseif input.KeyCode == Enum.KeyCode.Four then
+			slotIdx = 4
+		end
+		if slotIdx then
+			K.playForceAnimSlot(slotIdx)
+			return
+		end
+	end
 	if gameUsedIt then
 		return
 	end
@@ -10537,14 +10981,17 @@ me.CharacterAdded:Connect(function(char)
 	if ESP.antiSlownessOn then
 		K.setAntiSlownessRunning()
 	end
-	if ESP.moveAnim.on then
-		K.setMoveAnimOverrideRunning()
-	end
 	if ESP.animBlock.on then
 		K.setAnimBlockRunning()
 	end
 	loopTpOn = false
 	K.stopLoopTp()
+	ESP.speedCloneOn = false
+	K.stopSpeedClone()
+	if ESP.speedCloneTogBtn then
+		ESP.speedCloneTogBtn.Text = "Speed clone: off"
+	end
+	K.refreshSpeedCloneStatLbl()
 	combatStrafeOn = false
 	K.stopCombatStrafe()
 	combatBoostOn = false
