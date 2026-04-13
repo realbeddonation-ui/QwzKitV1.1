@@ -271,11 +271,31 @@ local ESP = {
 	targetKitElevKeyListen = false,
 	targetKitElevKeyBtn = nil,
 	targetKitElevBtn = nil,
+	targetKitFlyBehind = false,
+	targetKitBehindStuds = 10,
+	targetKitBehindBtn = nil,
+	targetKitBehindStudLbl = nil,
+	targetKitNpcSearch = "",
+	targetKitNpcScroll = nil,
+	targetKitNpcModel = nil,
+	targetKitNpcChasing = false,
+	targetKitNpcMoveBtn = nil,
+	targetKitNpcCache = nil,
+	targetKitNpcCacheClock = 0,
 	mobileQuickOffX = -48,
 	mobileQuickOffY = 12,
 	-- Move tab: keep walk/jump from being lowered by game scripts (state here = fewer chunk locals)
 	antiSlownessOn = false,
 	antiSlownessConn = nil,
+	-- Move tab: multiply HRP linear velocity after physics (uncapped mult; user-tuned)
+	velBoostOn = false,
+	velBoostConn = nil,
+	velBoostMult = 2,
+	velBoostMultBox = nil,
+	velBoostLastClock = nil,
+	-- Move tab: extreme TP (anti-TP bypass window for this kit only)
+	endWorldBypassT = 0,
+	endWorldCoordBox = nil,
 	cachedJumpHeight = nil,
 	speedCloneOn = false,
 	speedCloneConn = nil,
@@ -324,6 +344,28 @@ local ESP = {
 		timeLbl = nil,
 		pauseBtn = nil,
 	},
+	-- Client QA: local immortality (packed into ESP = no extra main-chunk locals)
+	immortalOn = false,
+	immortalCharConn = nil,
+	immortalHbConn = nil,
+	immortalPostConn = nil,
+	immortalPreConn = nil,
+	immortalCharChildConn = nil,
+	immortalHumConns = {},
+	immortalHumRestore = nil,
+	-- Client QA: anti-ragdoll (state on ESP)
+	noRagdollOn = false,
+	noRagdollCharConn = nil,
+	noRagdollHbConn = nil,
+	noRagdollPostConn = nil,
+	noRagdollHumConns = {},
+	noRagdollCharChildConn = nil,
+	noRagdollHumRestore = nil,
+	noRagdollScanAcc = 0,
+	-- Client QA: perm death (strip respawns when Players.CharacterAutoLoads cannot be set from client)
+	permDeathActive = false,
+	permDeathCharConn = nil,
+	permDeathHbConn = nil,
 }
 
 -- ========= Macros =========
@@ -623,7 +665,20 @@ function K.afterPhysics()
 	end
 
 	-- Loop TP / orbit strafe / fling move the HRP in ways anti-TP treats as "teleports" — skip undo.
-	if loopTpOn or combatStrafeOn or ESP.speedCloneOn or (combatResistOn and combatResistAntiTpBypass) or CC.flingInProgress or ESP.autoForceTpOn or ESP.autoForceTpBurstRunning then
+	if loopTpOn
+		or combatStrafeOn
+		or ESP.speedCloneOn
+		or (combatResistOn and combatResistAntiTpBypass)
+		or CC.flingInProgress
+		or ESP.autoForceTpOn
+		or ESP.autoForceTpBurstRunning
+		or ESP.targetKitChasing
+		or ESP.targetKitNpcChasing
+	then
+		K.saveSpot(r)
+		return
+	end
+	if os.clock() < (ESP.endWorldBypassT or 0) then
 		K.saveSpot(r)
 		return
 	end
@@ -1176,6 +1231,126 @@ function K.setLoopWalkRunning()
 		K.startLoopWalk()
 	else
 		K.stopLoopWalk()
+	end
+end
+
+function K.stopVelBoost()
+	if ESP.velBoostConn then
+		ESP.velBoostConn:Disconnect()
+		ESP.velBoostConn = nil
+	end
+	ESP.velBoostLastClock = nil
+end
+
+function K.startVelBoost()
+	K.stopVelBoost()
+	local function step(dt)
+		if not ESP.velBoostOn then
+			return
+		end
+		local r = K.getRoot()
+		if not r or not r.Parent then
+			return
+		end
+		local m = ESP.velBoostMult
+		if type(m) ~= "number" or m ~= m then
+			return
+		end
+		if math.abs(m - 1) < 1e-15 then
+			return
+		end
+		local v = r.AssemblyLinearVelocity
+		if v.Magnitude < 1e-9 then
+			return
+		end
+		local now = os.clock()
+		if not ESP.velBoostLastClock then
+			ESP.velBoostLastClock = now - (1 / 120)
+		end
+		local stepDt = (type(dt) == "number" and dt > 0 and dt == dt) and dt or math.clamp(now - ESP.velBoostLastClock, 1e-4, 0.35)
+		ESP.velBoostLastClock = now
+		local scale = m ^ stepDt
+		if scale ~= scale or scale == math.huge or scale == -math.huge then
+			return
+		end
+		local nv = v * scale
+		if nv.Magnitude ~= nv.Magnitude or nv.Magnitude == math.huge then
+			return
+		end
+		r.AssemblyLinearVelocity = nv
+	end
+	ESP.velBoostLastClock = nil
+	ESP.velBoostConn = RunService.Heartbeat:Connect(step)
+end
+
+function K.setVelBoostRunning()
+	if ESP.velBoostOn then
+		K.startVelBoost()
+	else
+		K.stopVelBoost()
+	end
+end
+
+-- Move tab: TP to astronomically far coordinates (streaming may drop); bypasses this kit's anti-TP briefly.
+function K.forceTeleportEndOfWorld()
+	local char = me.Character
+	local r = K.getRoot()
+	if not char or not r then
+		return
+	end
+	local raw = (ESP.endWorldCoordBox and ESP.endWorldCoordBox.Text) or "1e18"
+	local x, y, z
+	local parts = {}
+	for piece in string.gmatch(raw, "[^,]+") do
+		local n = tonumber((piece:gsub("^%s+", ""):gsub("%s+$", "")))
+		table.insert(parts, n)
+	end
+	if #parts >= 3 and parts[1] and parts[2] and parts[3] then
+		x, y, z = parts[1], parts[2], parts[3]
+	elseif #parts == 1 and parts[1] then
+		local mag = parts[1]
+		local u = Vector3.new(1, 0.015, 1).Unit
+		x, y, z = u.X * mag, u.Y * mag, u.Z * mag
+	else
+		local mag = tonumber(raw:match("^%s*(.-)%s*$")) or 1e18
+		local u = Vector3.new(1, 0.015, 1).Unit
+		x, y, z = u.X * mag, u.Y * mag, u.Z * mag
+	end
+	if not (x == x and y == y and z == z) then
+		return
+	end
+	ESP.endWorldBypassT = os.clock() + 5
+	local rot = r.CFrame - r.CFrame.Position
+	local target = CFrame.new(Vector3.new(x, y, z)) * rot
+	local function applyOnce()
+		local c2 = me.Character
+		local rr = c2 and c2:FindFirstChild("HumanoidRootPart")
+		if not rr or not rr.Parent then
+			return
+		end
+		pcall(function()
+			rr.AssemblyLinearVelocity = Vector3.zero
+			rr.AssemblyAngularVelocity = Vector3.zero
+		end)
+		pcall(function()
+			c2:PivotTo(target)
+		end)
+		pcall(function()
+			rr.CFrame = target
+		end)
+		pcall(function()
+			rr:SetNetworkOwner(me)
+		end)
+		pcall(function()
+			K.saveSpot(rr)
+		end)
+	end
+	applyOnce()
+	for _ = 1, 20 do
+		task.defer(applyOnce)
+	end
+	for _, delay in ipairs({ 0.02, 0.06, 0.12, 0.25, 0.5, 1, 2 }) do
+		task.delay(delay, applyOnce)
 	end
 end
 
@@ -4046,6 +4221,122 @@ function K.targetKitSteerDir(from, goalPos, char, useAvoid)
 	return best
 end
 
+-- Horizontal unit opposite to target travel / facing (for fly-behind).
+function K.targetKitBehindHoriz(tr)
+	if not tr or not tr.Parent then
+		return Vector3.zero
+	end
+	local v = tr.AssemblyLinearVelocity
+	local flat = Vector3.new(v.X, 0, v.Z)
+	if flat.Magnitude > 5 then
+		return -flat.Unit
+	end
+	local look = tr.CFrame.LookVector
+	local h = Vector3.new(look.X, 0, look.Z)
+	if h.Magnitude < 0.08 then
+		return Vector3.zero
+	end
+	return -h.Unit
+end
+
+function K.targetKitNpcRoot(mdl)
+	if not mdl or not mdl.Parent then
+		return nil
+	end
+	local r = mdl:FindFirstChild("HumanoidRootPart")
+	if r and r:IsA("BasePart") then
+		return r
+	end
+	if mdl.PrimaryPart and mdl.PrimaryPart:IsA("BasePart") then
+		return mdl.PrimaryPart
+	end
+	return nil
+end
+
+function K.targetKitNpcCandidates()
+	local now = os.clock()
+	if ESP.targetKitNpcCache and (now - ESP.targetKitNpcCacheClock) < 2.5 then
+		return ESP.targetKitNpcCache
+	end
+	local out = {}
+	local seen = {}
+	local steps = 0
+	for _, inst in ipairs(Workspace:GetDescendants()) do
+		steps += 1
+		if steps > 14000 then
+			break
+		end
+		if inst:IsA("Model") then
+			local hum = inst:FindFirstChildOfClass("Humanoid")
+			if hum and Players:GetPlayerFromCharacter(inst) == nil and inst ~= me.Character then
+				if not seen[inst] then
+					seen[inst] = true
+					table.insert(out, inst)
+				end
+			end
+		end
+	end
+	ESP.targetKitNpcCache = out
+	ESP.targetKitNpcCacheClock = now
+	return out
+end
+
+function K.targetKitFilteredNpcModels()
+	local q = string.lower(ESP.targetKitNpcSearch or "")
+	local arr = {}
+	for _, mdl in ipairs(K.targetKitNpcCandidates()) do
+		if mdl and mdl.Parent then
+			local name = string.lower(mdl.Name)
+			if q == "" or string.find(name, q, 1, true) then
+				table.insert(arr, mdl)
+			end
+		end
+	end
+	table.sort(arr, function(a, b)
+		return a.Name:lower() < b.Name:lower()
+	end)
+	return arr
+end
+
+function K.refreshTargetKitNpcList()
+	if not ESP.targetKitNpcScroll then
+		return
+	end
+	for _, ch in ESP.targetKitNpcScroll:GetChildren() do
+		if ch:IsA("TextButton") then
+			ch:Destroy()
+		end
+	end
+	for _, mdl in ipairs(K.targetKitFilteredNpcModels()) do
+		local row = Instance.new("TextButton")
+		row.Name = "TargetKitNpcRow"
+		row.AutoButtonColor = true
+		row.Active = true
+		row.Selectable = true
+		row.ZIndex = 3
+		row.Size = UDim2.new(1, -6, 0, 28)
+		row.BackgroundColor3 = (ESP.targetKitNpcModel == mdl) and Color3.fromRGB(42, 52, 72) or COL.listBg
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.Font = Enum.Font.Gotham
+		row.TextSize = 11
+		row.TextColor3 = K.getReadableTextColor(row.BackgroundColor3)
+		row.BorderSizePixel = 0
+		row.Text = "  " .. mdl.Name .. "  (" .. mdl.ClassName .. ")"
+		row.Parent = ESP.targetKitNpcScroll
+		K.roundCorners(row, 6)
+		row.MouseButton1Click:Connect(function()
+			if K.isTouchScrolling(ESP.targetKitNpcScroll) then
+				return
+			end
+			ESP.targetKitNpcModel = mdl
+			K.refreshTargetKitNpcList()
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "NPC / dummy: " .. mdl.Name
+			end
+		end)
+	end
+end
+
 function K.targetKitHorizontalBlocked(from, goalPos, char, yLift, probeDist)
 	local flat = Vector3.new(goalPos.X - from.X, 0, goalPos.Z - from.Z)
 	local m = flat.Magnitude
@@ -4062,16 +4353,7 @@ function K.targetKitHorizontalBlocked(from, goalPos, char, yLift, probeDist)
 	return Workspace:Raycast(origin, dir * dist, params) ~= nil
 end
 
-function K.targetKitStopNav()
-	pcall(function()
-		RunService:UnbindFromRenderStep(MENU_NAME .. "_TargetKitNav")
-	end)
-	ESP.targetKitChasing = false
-	ESP.targetKitArcPhase = 1
-	ESP.targetKitArcStartY = nil
-	if ESP.targetKitMoveBtn then
-		ESP.targetKitMoveBtn.Text = "Fly toward target: off"
-	end
+function K.targetKitRestorePilot()
 	if ESP.targetKitSavedFlyOn then
 		flyOn = true
 		K.setFlyRunning()
@@ -4090,6 +4372,39 @@ function K.targetKitStopNav()
 	end
 end
 
+function K.targetKitStopNavNpcOnly()
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_TargetKitNavNpc")
+	end)
+	ESP.targetKitNpcChasing = false
+	if ESP.targetKitNpcMoveBtn then
+		ESP.targetKitNpcMoveBtn.Text = "Fly toward NPC/dummy: off"
+	end
+	if not ESP.targetKitChasing then
+		K.targetKitRestorePilot()
+	end
+end
+
+function K.targetKitStopNav()
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_TargetKitNav")
+	end)
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_TargetKitNavNpc")
+	end)
+	ESP.targetKitChasing = false
+	ESP.targetKitNpcChasing = false
+	ESP.targetKitArcPhase = 1
+	ESP.targetKitArcStartY = nil
+	if ESP.targetKitMoveBtn then
+		ESP.targetKitMoveBtn.Text = "Fly toward target: off"
+	end
+	if ESP.targetKitNpcMoveBtn then
+		ESP.targetKitNpcMoveBtn.Text = "Fly toward NPC/dummy: off"
+	end
+	K.targetKitRestorePilot()
+end
+
 function K.targetKitStartNav()
 	if not ESP.targetKitUserId then
 		return false
@@ -4099,12 +4414,23 @@ function K.targetKitStartNav()
 	if not troot then
 		return false
 	end
-	local wasChasing = ESP.targetKitChasing
+	local wasPlayerChasing = ESP.targetKitChasing
+	local wasAnyChasing = ESP.targetKitChasing or ESP.targetKitNpcChasing
 	pcall(function()
 		RunService:UnbindFromRenderStep(MENU_NAME .. "_TargetKitNav")
 	end)
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_TargetKitNavNpc")
+	end)
 	ESP.targetKitChasing = false
-	if not wasChasing then
+	ESP.targetKitNpcChasing = false
+	if ESP.targetKitMoveBtn then
+		ESP.targetKitMoveBtn.Text = "Fly toward target: off"
+	end
+	if ESP.targetKitNpcMoveBtn then
+		ESP.targetKitNpcMoveBtn.Text = "Fly toward NPC/dummy: off"
+	end
+	if not wasAnyChasing then
 		ESP.targetKitSavedFlyOn = flyOn
 		if flyOn then
 			flyOn = false
@@ -4112,7 +4438,7 @@ function K.targetKitStartNav()
 		end
 	end
 	ESP.targetKitChasing = true
-	if not wasChasing then
+	if not wasPlayerChasing then
 		local r0 = K.getRoot()
 		ESP.targetKitArcStartY = r0 and r0.Position.Y or 0
 		ESP.targetKitArcPhase = 1
@@ -4139,7 +4465,14 @@ function K.targetKitStartNav()
 			return
 		end
 		local yGoal = 1.5 + (ESP.targetKitElevatedChase and ESP.targetKitElevStuds or 0)
-		local goal = tr.Position + Vector3.new(0, yGoal, 0)
+		local baseGoal = tr.Position + Vector3.new(0, yGoal, 0)
+		local goal = baseGoal
+		if ESP.targetKitFlyBehind then
+			local bk = K.targetKitBehindHoriz(tr)
+			if bk.Magnitude > 0.02 then
+				goal = baseGoal + bk * ESP.targetKitBehindStuds
+			end
+		end
 		local from = root.Position
 		local faceAim = tr.Position + Vector3.new(0, 1.35, 0)
 		local dist = (goal - from).Magnitude
@@ -4224,23 +4557,212 @@ function K.targetKitStartNav()
 		if ESP.targetKitStatusLbl then
 			local hi = ESP.targetKitElevatedChase and string.format("above +%.0f", ESP.targetKitElevStuds) or "level"
 			if ESP.targetKitArcMode then
+				local bh = ESP.targetKitFlyBehind and " · behind" or ""
 				ESP.targetKitStatusLbl.Text = string.format(
-					"%s · %s · %.0f studs · %s · arc on · avoid %s · spd %.0f",
+					"%s · %s · %.0f studs · %s · arc on · avoid %s · spd %.0f%s",
 					phaseTag,
 					tpl2.Name,
 					dist,
 					hi,
 					ESP.targetKitAvoid and "on" or "off",
-					ESP.targetKitSpeed
+					ESP.targetKitSpeed,
+					bh
 				)
 			else
+				local bh = ESP.targetKitFlyBehind and " · behind" or ""
 				ESP.targetKitStatusLbl.Text = string.format(
-					"Chasing %s · %.0f studs · %s · avoid %s · speed %.0f",
+					"Chasing %s · %.0f studs · %s · avoid %s · speed %.0f%s",
 					tpl2.Name,
 					dist,
 					hi,
 					ESP.targetKitAvoid and "on" or "off",
-					ESP.targetKitSpeed
+					ESP.targetKitSpeed,
+					bh
+				)
+			end
+		end
+	end)
+	return true
+end
+
+function K.targetKitStartNavNpc()
+	if not ESP.targetKitNpcModel or not ESP.targetKitNpcModel.Parent then
+		return false
+	end
+	local tr0 = K.targetKitNpcRoot(ESP.targetKitNpcModel)
+	if not tr0 then
+		return false
+	end
+	local wasNpcChasing = ESP.targetKitNpcChasing
+	local wasAnyChasing = ESP.targetKitChasing or ESP.targetKitNpcChasing
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_TargetKitNav")
+	end)
+	pcall(function()
+		RunService:UnbindFromRenderStep(MENU_NAME .. "_TargetKitNavNpc")
+	end)
+	ESP.targetKitChasing = false
+	ESP.targetKitNpcChasing = false
+	if ESP.targetKitMoveBtn then
+		ESP.targetKitMoveBtn.Text = "Fly toward target: off"
+	end
+	if ESP.targetKitNpcMoveBtn then
+		ESP.targetKitNpcMoveBtn.Text = "Fly toward NPC/dummy: off"
+	end
+	if not wasAnyChasing then
+		ESP.targetKitSavedFlyOn = flyOn
+		if flyOn then
+			flyOn = false
+			K.stopFly()
+		end
+	end
+	ESP.targetKitNpcChasing = true
+	if not wasNpcChasing then
+		local r0 = K.getRoot()
+		ESP.targetKitArcStartY = r0 and r0.Position.Y or 0
+		ESP.targetKitArcPhase = 1
+	end
+	RunService:BindToRenderStep(MENU_NAME .. "_TargetKitNavNpc", 2147483642, function()
+		if not ESP.targetKitNpcChasing then
+			return
+		end
+		local char = me.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		if not hum or not root then
+			return
+		end
+		hum.PlatformStand = true
+		hum.AutoRotate = false
+		local mdl = ESP.targetKitNpcModel
+		if not mdl or not mdl.Parent then
+			K.targetKitStopNavNpcOnly()
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "NPC model gone — stopped."
+			end
+			return
+		end
+		local tr = K.targetKitNpcRoot(mdl)
+		if not tr or not tr.Parent then
+			K.targetKitStopNavNpcOnly()
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "NPC root missing — stopped."
+			end
+			return
+		end
+		local yGoal = 1.5 + (ESP.targetKitElevatedChase and ESP.targetKitElevStuds or 0)
+		local baseGoal = tr.Position + Vector3.new(0, yGoal, 0)
+		local goal = baseGoal
+		if ESP.targetKitFlyBehind then
+			local bk = K.targetKitBehindHoriz(tr)
+			if bk.Magnitude > 0.02 then
+				goal = baseGoal + bk * ESP.targetKitBehindStuds
+			end
+		end
+		local from = root.Position
+		local faceAim = tr.Position + Vector3.new(0, 1.35, 0)
+		local dist = (goal - from).Magnitude
+		if dist < 5 then
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+			local toA = faceAim - from
+			if toA.Magnitude > 0.05 then
+				root.CFrame = CFrame.lookAt(from, faceAim)
+			end
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "Within range of NPC " .. mdl.Name .. " (~" .. string.format("%.0f", dist) .. " studs)."
+			end
+			return
+		end
+		local steer
+		local phaseTag = ""
+		if ESP.targetKitArcMode then
+			local clear = ESP.targetKitArcClear
+			local maxRise = ESP.targetKitArcMaxRise
+			local descD = ESP.targetKitArcDescDist
+			local flatDelta = Vector3.new(goal.X - from.X, 0, goal.Z - from.Z)
+			local flatDist = flatDelta.Magnitude
+			local baseY = ESP.targetKitArcStartY or from.Y
+			local cruiseY = math.max(goal.Y + clear, baseY + math.min(clear, 14))
+			local horizProbe = math.min(math.max(flatDist, 10), 72)
+			if ESP.targetKitArcPhase >= 3 then
+				phaseTag = "drop→chase"
+				steer = K.targetKitSteerDir(from, goal, char, ESP.targetKitAvoid)
+			elseif ESP.targetKitArcPhase == 2 then
+				phaseTag = "cruise"
+				local holdY = math.max(cruiseY - 1.5, goal.Y + clear * 0.88)
+				holdY = math.min(holdY, baseY + maxRise + clear)
+				local aerialGoal = Vector3.new(goal.X, holdY, goal.Z)
+				local toG = aerialGoal - from
+				if toG.Magnitude < 0.15 then
+					steer = Vector3.yAxis
+				else
+					steer = toG.Unit
+				end
+				if ESP.targetKitAvoid then
+					local alt = K.targetKitSteerDir(from, aerialGoal, char, true)
+					if alt.Magnitude > 0.02 and alt:Dot(steer) > 0.2 then
+						steer = (steer * 0.55 + alt * 0.45).Unit
+					end
+				end
+				local horizOk = not K.targetKitHorizontalBlocked(from, goal, char, 1.1, horizProbe + 6)
+				if flatDist < descD and horizOk then
+					ESP.targetKitArcPhase = 3
+				elseif from.Y <= goal.Y + clear * 0.35 and flatDist < descD * 1.35 and horizOk then
+					ESP.targetKitArcPhase = 3
+				end
+			else
+				phaseTag = "climb"
+				local flatDir = flatDist > 0.45 and flatDelta.Unit or Vector3.zero
+				steer = (Vector3.yAxis * 0.74 + flatDir * 0.26)
+				if steer.Magnitude < 0.06 then
+					steer = Vector3.yAxis
+				else
+					steer = steer.Unit
+				end
+				local blocked = K.targetKitHorizontalBlocked(from, goal, char, 1.5, horizProbe)
+				local highEnough = from.Y >= goal.Y + clear - 1.2
+				local ceiling = baseY + maxRise
+				if (highEnough and not blocked) or from.Y >= ceiling then
+					ESP.targetKitArcPhase = 2
+				end
+			end
+		else
+			steer = K.targetKitSteerDir(from, goal, char, ESP.targetKitAvoid)
+		end
+		if steer.Magnitude < 0.02 then
+			steer = (goal - from).Unit
+		end
+		root.AssemblyLinearVelocity = steer * ESP.targetKitSpeed
+		root.AssemblyAngularVelocity = Vector3.zero
+		local pos = root.Position
+		local toA2 = faceAim - pos
+		if toA2.Magnitude > 0.05 then
+			root.CFrame = CFrame.lookAt(pos, faceAim)
+		end
+		if ESP.targetKitStatusLbl then
+			local hi = ESP.targetKitElevatedChase and string.format("above +%.0f", ESP.targetKitElevStuds) or "level"
+			local bh = ESP.targetKitFlyBehind and " · behind" or ""
+			if ESP.targetKitArcMode then
+				ESP.targetKitStatusLbl.Text = string.format(
+					"%s · NPC %s · %.0f studs · %s · arc on · avoid %s · spd %.0f%s",
+					phaseTag,
+					mdl.Name,
+					dist,
+					hi,
+					ESP.targetKitAvoid and "on" or "off",
+					ESP.targetKitSpeed,
+					bh
+				)
+			else
+				ESP.targetKitStatusLbl.Text = string.format(
+					"NPC chase %s · %.0f studs · %s · avoid %s · speed %.0f%s",
+					mdl.Name,
+					dist,
+					hi,
+					ESP.targetKitAvoid and "on" or "off",
+					ESP.targetKitSpeed,
+					bh
 				)
 			end
 		end
@@ -4288,6 +4810,45 @@ function K.targetKitTeleportToPick()
 	return true
 end
 
+function K.targetKitTeleportToNpcPick()
+	if not ESP.targetKitNpcModel or not ESP.targetKitNpcModel.Parent then
+		return false
+	end
+	local troot = K.targetKitNpcRoot(ESP.targetKitNpcModel)
+	local char = me.Character
+	if not troot or not char then
+		return false
+	end
+	local pivot = char:GetPivot()
+	local dir = troot.Position - pivot.Position
+	local flat = Vector3.new(dir.X, 0, dir.Z)
+	local off
+	if flat.Magnitude > 0.35 then
+		off = flat.Unit * 5.5
+	else
+		off = troot.CFrame.RightVector * 5.5
+	end
+	local goalPos = troot.Position + Vector3.new(0, 2.2, 0) + off
+	local look = (troot.Position + Vector3.new(0, 1.2, 0)) - goalPos
+	if look.Magnitude < 0.15 then
+		look = troot.CFrame.LookVector
+	else
+		look = look.Unit
+	end
+	pcall(function()
+		char:PivotTo(CFrame.lookAt(goalPos, goalPos + look))
+	end)
+	local r = K.getRoot()
+	if r then
+		r.AssemblyLinearVelocity = Vector3.zero
+		r.AssemblyAngularVelocity = Vector3.zero
+	end
+	if ESP.targetKitStatusLbl then
+		ESP.targetKitStatusLbl.Text = "Teleported near NPC " .. ESP.targetKitNpcModel.Name .. "."
+	end
+	return true
+end
+
 function K.syncMobileQuickFramePosition()
 	if not mobileQuickFrame or not mobileQuickFrame.Parent then
 		return
@@ -4295,6 +4856,15 @@ function K.syncMobileQuickFramePosition()
 	local inset = GuiService:GetGuiInset()
 	mobileQuickFrame.Position =
 		UDim2.new(1, ESP.mobileQuickOffX - inset.X, 0, ESP.mobileQuickOffY + inset.Y)
+end
+
+function K.syncTargetKitFlyBehindUi()
+	if ESP.targetKitBehindBtn then
+		ESP.targetKitBehindBtn.Text = ESP.targetKitFlyBehind and "Go fly behind target: on" or "Go fly behind target: off"
+	end
+	if ESP.targetKitBehindStudLbl then
+		ESP.targetKitBehindStudLbl.Text = "Behind offset: " .. tostring(math.floor(ESP.targetKitBehindStuds + 0.5)) .. " studs"
+	end
 end
 
 function K.syncTargetKitElevUi()
@@ -4828,6 +5398,7 @@ function K.onPlayerRemoving(player)
 	end
 	task.defer(K.refreshEspTargetList)
 	task.defer(K.refreshTargetKitList)
+	task.defer(K.refreshTargetKitNpcList)
 end
 
 -- ========= Label updates =========
@@ -4890,6 +5461,23 @@ function K.refreshMoveLabels()
 	end
 	if ESP.labels.move.antiSlow then
 		ESP.labels.move.antiSlow.Text = ESP.antiSlownessOn and "Anti slowness: on" or "Anti slowness: off"
+	end
+	if ESP.labels.move.velBoost then
+		ESP.labels.move.velBoost.Text = ESP.velBoostOn and "Velocity booster: on" or "Velocity booster: off"
+	end
+	if ESP.labels.move.velBoostHint then
+		local m = ESP.velBoostMult
+		local ms = (type(m) == "number" and m == m) and string.format("%.6g", m) or "?"
+		ESP.labels.move.velBoostHint.Text = "Per-second scale (no cap): v *= mult^dt  ·  mult=" .. ms .. "  (2 ≈ double speed each second)"
+	end
+	if ESP.velBoostMultBox and (ESP.velBoostMultBox:IsA("TextBox")) then
+		local m = ESP.velBoostMult
+		if type(m) == "number" and m == m then
+			local s = string.format("%.6g", m)
+			if ESP.velBoostMultBox.Text ~= s and (not ESP.velBoostMultBox:IsFocused()) then
+				ESP.velBoostMultBox.Text = s
+			end
+		end
 	end
 	if ESP.labels.move.speed then
 		ESP.labels.move.speed.Text = "Loop-walk: " .. (loopWalkOn and "on" or "off") .. "  speed " .. tostring(math.floor(loopWalkSpeed))
@@ -4963,9 +5551,517 @@ K.refreshClientLabels = function()
 	if ESP.labels.client.chams then
 		ESP.labels.client.chams.Text = "Box visibility: " .. string.format("%.2f", ESP.chamsBrightness)
 	end
+	if ESP.labels.client.immortal then
+		ESP.labels.client.immortal.Text = ESP.immortalOn and "Immortal (client QA): on" or "Immortal (client QA): off"
+	end
+	if ESP.labels.client.noRagdoll then
+		ESP.labels.client.noRagdoll.Text = ESP.noRagdollOn and "Disable ragdoll (client QA): on" or "Disable ragdoll (client QA): off"
+	end
 	if ESP.targetLabel then
 		local t = K.getEspTargetPlayer()
 		ESP.targetLabel.Text = t and ("ESP target: " .. t.Name) or "ESP target: (none)"
+	end
+end
+
+-- Client tab: extreme local survivability (nested locals only; state lives on ESP)
+K.setClientImmortal = function(wantOn)
+	local rsName = "TesterToolkitImmortal"
+	local function disconnectHumConns()
+		local t = ESP.immortalHumConns
+		for i = 1, #t do
+			local c = t[i]
+			if c and c.Disconnect then
+				c:Disconnect()
+			end
+		end
+		table.clear(t)
+	end
+	local function restoreHumDefaults()
+		local r = ESP.immortalHumRestore
+		if not r then
+			return
+		end
+		for hum, snap in pairs(r) do
+			if typeof(hum) == "Instance" and hum.Parent and snap then
+				pcall(function()
+					hum.BreakJointsOnDeath = snap.bj
+					hum:SetStateEnabled(Enum.HumanoidStateType.Dead, snap.dead)
+				end)
+			end
+		end
+		ESP.immortalHumRestore = setmetatable({}, { __mode = "k" })
+	end
+	local function disconnectAll()
+		if ESP.immortalCharConn then
+			ESP.immortalCharConn:Disconnect()
+			ESP.immortalCharConn = nil
+		end
+		if ESP.immortalHbConn then
+			ESP.immortalHbConn:Disconnect()
+			ESP.immortalHbConn = nil
+		end
+		if ESP.immortalPostConn then
+			ESP.immortalPostConn:Disconnect()
+			ESP.immortalPostConn = nil
+		end
+		if ESP.immortalPreConn then
+			ESP.immortalPreConn:Disconnect()
+			ESP.immortalPreConn = nil
+		end
+		if ESP.immortalCharChildConn then
+			ESP.immortalCharChildConn:Disconnect()
+			ESP.immortalCharChildConn = nil
+		end
+		pcall(function()
+			RunService:UnbindFromRenderStep(rsName)
+		end)
+		disconnectHumConns()
+		restoreHumDefaults()
+	end
+	local function captureHumDefaults(hum)
+		if not ESP.immortalHumRestore then
+			ESP.immortalHumRestore = setmetatable({}, { __mode = "k" })
+		end
+		local r = ESP.immortalHumRestore
+		if r[hum] then
+			return
+		end
+		local deadOk, deadOn = pcall(function()
+			return hum:GetStateEnabled(Enum.HumanoidStateType.Dead)
+		end)
+		r[hum] = {
+			bj = hum.BreakJointsOnDeath,
+			dead = deadOk and deadOn or true,
+		}
+	end
+	local function immortalTick()
+		if not ESP.immortalOn then
+			return
+		end
+		local hum = K.getHumanoid()
+		if not hum or not hum.Parent then
+			return
+		end
+		local char = hum.Parent
+		captureHumDefaults(hum)
+		pcall(function()
+			hum.BreakJointsOnDeath = false
+			hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+			local mh = hum.MaxHealth
+			if mh < 1e5 then
+				hum.MaxHealth = 1e6
+				mh = hum.MaxHealth
+			end
+			if hum.Health <= 0 then
+				hum.Health = math.max(mh * 0.02, 1e-4)
+			elseif hum.Health < mh * 0.02 then
+				hum.Health = math.max(hum.Health, mh * 0.02)
+			end
+		end)
+		pcall(function()
+			local attr = hum:GetAttribute("Health")
+			if typeof(attr) == "number" and attr <= 0 then
+				hum:SetAttribute("Health", math.max(hum.Health, hum.MaxHealth * 0.05))
+			end
+		end)
+		pcall(function()
+			if char:GetAttribute("Dead") == true then
+				char:SetAttribute("Dead", false)
+			end
+		end)
+		pcall(function()
+			if hum:GetState() == Enum.HumanoidStateType.Dead then
+				hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+			end
+		end)
+	end
+	local function wireHum(hum)
+		if not hum or not hum.Parent then
+			return
+		end
+		captureHumDefaults(hum)
+		table.insert(ESP.immortalHumConns, hum:GetPropertyChangedSignal("Health"):Connect(function()
+			if not ESP.immortalOn or not hum.Parent then
+				return
+			end
+			if hum.Health <= 0 then
+				pcall(function()
+					local mh = hum.MaxHealth
+					if mh <= 0 then
+						mh = 1e6
+						hum.MaxHealth = mh
+					end
+					hum.Health = math.max(mh * 0.05, 1e-6)
+				end)
+			end
+		end))
+		table.insert(ESP.immortalHumConns, hum:GetPropertyChangedSignal("MaxHealth"):Connect(function()
+			if not ESP.immortalOn or not hum.Parent then
+				return
+			end
+			pcall(function()
+				local mh = hum.MaxHealth
+				if mh > 0 and mh < 1e5 then
+					hum.MaxHealth = 1e6
+				end
+			end)
+		end))
+		local attrSigOk, attrSig = pcall(function()
+			return hum:GetAttributeChangedSignal("Health")
+		end)
+		if attrSigOk and attrSig and attrSig.Connect then
+			table.insert(ESP.immortalHumConns, attrSig:Connect(function()
+				if not ESP.immortalOn or not hum.Parent then
+					return
+				end
+				pcall(function()
+					local v = hum:GetAttribute("Health")
+					if typeof(v) == "number" and v <= 0 then
+						local mh = hum.MaxHealth
+						if mh <= 0 then
+							mh = 1e6
+							hum.MaxHealth = mh
+						end
+						hum:SetAttribute("Health", math.max(mh * 0.05, 1e-6))
+					end
+				end)
+			end))
+		end
+		table.insert(ESP.immortalHumConns, hum.StateChanged:Connect(function(_, newSt)
+			if not ESP.immortalOn or not hum.Parent then
+				return
+			end
+			if newSt == Enum.HumanoidStateType.Dead then
+				pcall(function()
+					hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+					hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+					hum:ChangeState(Enum.HumanoidStateType.Running)
+				end)
+			end
+		end))
+		table.insert(ESP.immortalHumConns, hum.Died:Connect(function()
+			if not ESP.immortalOn then
+				return
+			end
+			pcall(function()
+				if hum.Parent then
+					local mh = hum.MaxHealth
+					if mh <= 0 then
+						mh = 1e6
+						hum.MaxHealth = mh
+					end
+					hum.Health = math.max(mh * 0.25, 1)
+				end
+			end)
+		end))
+		pcall(function()
+			hum.BreakJointsOnDeath = false
+			hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+		end)
+	end
+	local function onChar(char)
+		if not ESP.immortalOn then
+			return
+		end
+		disconnectHumConns()
+		if ESP.immortalCharChildConn then
+			ESP.immortalCharChildConn:Disconnect()
+			ESP.immortalCharChildConn = nil
+		end
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum and ESP.immortalOn then
+			wireHum(hum)
+		else
+			task.defer(function()
+				if not ESP.immortalOn or char.Parent == nil then
+					return
+				end
+				local h2 = char:WaitForChild("Humanoid", 15)
+				if h2 and ESP.immortalOn then
+					disconnectHumConns()
+					wireHum(h2)
+				end
+			end)
+		end
+		ESP.immortalCharChildConn = char.ChildAdded:Connect(function(ch)
+			if not ESP.immortalOn then
+				return
+			end
+			if ch:IsA("Humanoid") then
+				disconnectHumConns()
+				wireHum(ch)
+			end
+		end)
+	end
+	if wantOn then
+		disconnectAll()
+		ESP.immortalHumRestore = setmetatable({}, { __mode = "k" })
+		ESP.immortalOn = true
+		ESP.immortalCharConn = me.CharacterAdded:Connect(onChar)
+		ESP.immortalHbConn = RunService.Heartbeat:Connect(immortalTick)
+		pcall(function()
+			ESP.immortalPostConn = RunService.PostSimulation:Connect(immortalTick)
+		end)
+		pcall(function()
+			ESP.immortalPreConn = RunService.PreSimulation:Connect(immortalTick)
+		end)
+		pcall(function()
+			RunService:BindToRenderStep(rsName, Enum.RenderPriority.Last.Value, immortalTick)
+		end)
+		if me.Character then
+			onChar(me.Character)
+		end
+	else
+		ESP.immortalOn = false
+		disconnectAll()
+	end
+	K.refreshClientLabels()
+end
+
+-- Client tab: block ragdoll / falling-over states (nested; state on ESP)
+K.setClientNoRagdoll = function(wantOn)
+	local stRagdoll = Enum.HumanoidStateType.Ragdoll
+	local stFall = Enum.HumanoidStateType.FallingDown
+	local stPhysics = Enum.HumanoidStateType.Physics
+	local function disconnectHumConns()
+		local t = ESP.noRagdollHumConns
+		for i = 1, #t do
+			local c = t[i]
+			if c and c.Disconnect then
+				c:Disconnect()
+			end
+		end
+		table.clear(t)
+	end
+	local function restoreHumDefaults()
+		local r = ESP.noRagdollHumRestore
+		if not r then
+			return
+		end
+		for hum, snap in pairs(r) do
+			if typeof(hum) == "Instance" and hum.Parent and snap then
+				pcall(function()
+					hum:SetStateEnabled(stRagdoll, snap.rag)
+					hum:SetStateEnabled(stFall, snap.fall)
+				end)
+			end
+		end
+		ESP.noRagdollHumRestore = setmetatable({}, { __mode = "k" })
+	end
+	local function disconnectAll()
+		if ESP.noRagdollCharConn then
+			ESP.noRagdollCharConn:Disconnect()
+			ESP.noRagdollCharConn = nil
+		end
+		if ESP.noRagdollHbConn then
+			ESP.noRagdollHbConn:Disconnect()
+			ESP.noRagdollHbConn = nil
+		end
+		if ESP.noRagdollPostConn then
+			ESP.noRagdollPostConn:Disconnect()
+			ESP.noRagdollPostConn = nil
+		end
+		if ESP.noRagdollCharChildConn then
+			ESP.noRagdollCharChildConn:Disconnect()
+			ESP.noRagdollCharChildConn = nil
+		end
+		disconnectHumConns()
+		restoreHumDefaults()
+	end
+	local function captureHumDefaults(hum)
+		if not ESP.noRagdollHumRestore then
+			ESP.noRagdollHumRestore = setmetatable({}, { __mode = "k" })
+		end
+		local r = ESP.noRagdollHumRestore
+		if r[hum] then
+			return
+		end
+		local okR, rag = pcall(function()
+			return hum:GetStateEnabled(stRagdoll)
+		end)
+		local okF, fall = pcall(function()
+			return hum:GetStateEnabled(stFall)
+		end)
+		r[hum] = {
+			rag = okR and rag or true,
+			fall = okF and fall or true,
+		}
+	end
+	local function antiRagdollTick()
+		if not ESP.noRagdollOn then
+			return
+		end
+		local hum = K.getHumanoid()
+		if not hum or not hum.Parent then
+			return
+		end
+		local char = hum.Parent
+		captureHumDefaults(hum)
+		pcall(function()
+			hum:SetStateEnabled(stRagdoll, false)
+			hum:SetStateEnabled(stFall, false)
+		end)
+		pcall(function()
+			local s = hum:GetState()
+			if s == stRagdoll or s == stFall or s == stPhysics then
+				hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+			end
+		end)
+		ESP.noRagdollScanAcc = (ESP.noRagdollScanAcc or 0) + 1
+		if ESP.noRagdollScanAcc % 5 == 0 and char then
+			for _, d in ipairs(char:GetDescendants()) do
+				if d:IsA("BallSocketConstraint") or d:IsA("HingeConstraint") or d:IsA("SpringConstraint") then
+					local nm = string.lower(d.Name)
+					if string.find(nm, "ragdoll", 1, true) then
+						pcall(function()
+							d.Enabled = false
+						end)
+					end
+				end
+			end
+		end
+	end
+	local function wireHum(hum)
+		if not hum or not hum.Parent then
+			return
+		end
+		captureHumDefaults(hum)
+		pcall(function()
+			hum:SetStateEnabled(stRagdoll, false)
+			hum:SetStateEnabled(stFall, false)
+		end)
+		table.insert(ESP.noRagdollHumConns, hum.StateChanged:Connect(function(_, newSt)
+			if not ESP.noRagdollOn or not hum.Parent then
+				return
+			end
+			if newSt == stRagdoll or newSt == stFall or newSt == stPhysics then
+				pcall(function()
+					hum:SetStateEnabled(stRagdoll, false)
+					hum:SetStateEnabled(stFall, false)
+					hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+				end)
+			end
+		end))
+	end
+	local function onChar(char)
+		if not ESP.noRagdollOn then
+			return
+		end
+		disconnectHumConns()
+		if ESP.noRagdollCharChildConn then
+			ESP.noRagdollCharChildConn:Disconnect()
+			ESP.noRagdollCharChildConn = nil
+		end
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum and ESP.noRagdollOn then
+			wireHum(hum)
+		else
+			task.defer(function()
+				if not ESP.noRagdollOn or char.Parent == nil then
+					return
+				end
+				local h2 = char:WaitForChild("Humanoid", 15)
+				if h2 and ESP.noRagdollOn then
+					disconnectHumConns()
+					wireHum(h2)
+				end
+			end)
+		end
+		ESP.noRagdollCharChildConn = char.ChildAdded:Connect(function(ch)
+			if not ESP.noRagdollOn then
+				return
+			end
+			if ch:IsA("Humanoid") then
+				disconnectHumConns()
+				wireHum(ch)
+			end
+		end)
+	end
+	if wantOn then
+		disconnectAll()
+		ESP.noRagdollHumRestore = setmetatable({}, { __mode = "k" })
+		ESP.noRagdollOn = true
+		ESP.noRagdollCharConn = me.CharacterAdded:Connect(onChar)
+		ESP.noRagdollHbConn = RunService.Heartbeat:Connect(antiRagdollTick)
+		pcall(function()
+			ESP.noRagdollPostConn = RunService.PostSimulation:Connect(antiRagdollTick)
+		end)
+		if me.Character then
+			onChar(me.Character)
+		end
+	else
+		ESP.noRagdollOn = false
+		disconnectAll()
+	end
+	K.refreshClientLabels()
+end
+
+-- Client QA: kill local player and try to block auto-respawn. LocalScript cannot change Players.* on most servers; we also strip any new living Character.
+K.clearPermDeathClient = function()
+	ESP.permDeathActive = false
+	pcall(function()
+		Players.CharacterAutoLoads = true
+	end)
+	if ESP.permDeathCharConn then
+		ESP.permDeathCharConn:Disconnect()
+		ESP.permDeathCharConn = nil
+	end
+	if ESP.permDeathHbConn then
+		ESP.permDeathHbConn:Disconnect()
+		ESP.permDeathHbConn = nil
+	end
+end
+
+K.permDeathClient = function()
+	pcall(function()
+		K.setClientImmortal(false)
+	end)
+	pcall(function()
+		K.setClientNoRagdoll(false)
+	end)
+	if ESP.permDeathCharConn then
+		ESP.permDeathCharConn:Disconnect()
+		ESP.permDeathCharConn = nil
+	end
+	if ESP.permDeathHbConn then
+		ESP.permDeathHbConn:Disconnect()
+		ESP.permDeathHbConn = nil
+	end
+	ESP.permDeathActive = true
+	pcall(function()
+		Players.CharacterAutoLoads = false
+	end)
+	ESP.permDeathCharConn = me.CharacterAdded:Connect(function(char)
+		if not ESP.permDeathActive then
+			return
+		end
+		task.defer(function()
+			if ESP.permDeathActive and char.Parent then
+				char:Destroy()
+			end
+		end)
+	end)
+	ESP.permDeathHbConn = RunService.Heartbeat:Connect(function()
+		if not ESP.permDeathActive then
+			return
+		end
+		local c = me.Character
+		if not c or not c.Parent then
+			return
+		end
+		local h = c:FindFirstChildOfClass("Humanoid")
+		if h and h.Health > 0.05 then
+			pcall(function()
+				c:Destroy()
+			end)
+		end
+	end)
+	local hum = K.getHumanoid()
+	if hum then
+		pcall(function()
+			hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+			hum.Health = 0
+		end)
 	end
 end
 
@@ -6673,6 +7769,136 @@ function K.menuFillMoveTab(pageMove)
 		K.refreshMoveLabels()
 	end)
 
+	K.addSectionLabel(pageMove, "VELOCITY BOOSTER")
+	local vbNote = Instance.new("TextLabel")
+	vbNote.BackgroundTransparency = 1
+	vbNote.Font = Enum.Font.Gotham
+	vbNote.TextSize = 11
+	vbNote.TextXAlignment = Enum.TextXAlignment.Left
+	vbNote.TextWrapped = true
+	vbNote.TextColor3 = COL.muted
+	vbNote.Text =
+		"Scales HRP linear velocity each Heartbeat as v *= mult^dt (dt = frame time). mult is a per-second growth factor (2 ≈ double each second). No clamp; NaN/inf are skipped. Type any mult in the box."
+	vbNote.Size = UDim2.new(1, 0, 0, 44)
+	vbNote.Parent = pageMove
+	ESP.labels.move.velBoost = K.makeToggleButton(pageMove, "Velocity booster: off", function()
+		ESP.velBoostOn = not ESP.velBoostOn
+		K.setVelBoostRunning()
+		K.refreshMoveLabels()
+	end)
+	ESP.labels.move.velBoostHint = Instance.new("TextLabel")
+	ESP.labels.move.velBoostHint.BackgroundTransparency = 1
+	ESP.labels.move.velBoostHint.Font = Enum.Font.Gotham
+	ESP.labels.move.velBoostHint.TextSize = 12
+	ESP.labels.move.velBoostHint.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.labels.move.velBoostHint.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.labels.move.velBoostHint.Size = UDim2.new(1, 0, 0, 20)
+	ESP.labels.move.velBoostHint.Parent = pageMove
+	local vbRow = Instance.new("Frame")
+	vbRow.BackgroundTransparency = 1
+	vbRow.Size = UDim2.new(1, 0, 0, 34)
+	vbRow.Parent = pageMove
+	local vbLay = Instance.new("UIListLayout")
+	vbLay.FillDirection = Enum.FillDirection.Horizontal
+	vbLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	vbLay.Padding = UDim.new(0, 8)
+	vbLay.Parent = vbRow
+	local vbDown = Instance.new("TextButton")
+	vbDown.Text = "÷1.05"
+	vbDown.Size = UDim2.fromOffset(52, 28)
+	vbDown.Font = Enum.Font.GothamBold
+	vbDown.TextSize = 11
+	vbDown.TextColor3 = Color3.new(1, 1, 1)
+	vbDown.BackgroundColor3 = COL.btn
+	vbDown.BorderSizePixel = 0
+	vbDown.Parent = vbRow
+	K.roundCorners(vbDown, 6)
+	vbDown.MouseButton1Click:Connect(function()
+		local m = ESP.velBoostMult
+		if type(m) == "number" and m == m and m ~= 0 then
+			ESP.velBoostMult = m / 1.05
+		end
+		K.refreshMoveLabels()
+	end)
+	local vbUp = Instance.new("TextButton")
+	vbUp.Text = "×1.05"
+	vbUp.Size = UDim2.fromOffset(52, 28)
+	vbUp.Font = Enum.Font.GothamBold
+	vbUp.TextSize = 11
+	vbUp.TextColor3 = Color3.new(1, 1, 1)
+	vbUp.BackgroundColor3 = COL.btn
+	vbUp.BorderSizePixel = 0
+	vbUp.Parent = vbRow
+	K.roundCorners(vbUp, 6)
+	vbUp.MouseButton1Click:Connect(function()
+		local m = ESP.velBoostMult
+		if type(m) == "number" and m == m then
+			ESP.velBoostMult = m * 1.05
+		end
+		K.refreshMoveLabels()
+	end)
+	local vbReset = Instance.new("TextButton")
+	vbReset.Text = "Mult=1"
+	vbReset.Size = UDim2.fromOffset(64, 28)
+	vbReset.Font = Enum.Font.GothamBold
+	vbReset.TextSize = 11
+	vbReset.TextColor3 = Color3.new(1, 1, 1)
+	vbReset.BackgroundColor3 = COL.btn
+	vbReset.BorderSizePixel = 0
+	vbReset.Parent = vbRow
+	K.roundCorners(vbReset, 6)
+	vbReset.MouseButton1Click:Connect(function()
+		ESP.velBoostMult = 1
+		K.refreshMoveLabels()
+	end)
+	ESP.velBoostMultBox = Instance.new("TextBox")
+	ESP.velBoostMultBox.Size = UDim2.new(1, -200, 1, 0)
+	ESP.velBoostMultBox.BackgroundColor3 = COL.inputBg
+	ESP.velBoostMultBox.TextColor3 = Color3.new(1, 1, 1)
+	ESP.velBoostMultBox.Font = Enum.Font.Code
+	ESP.velBoostMultBox.TextSize = 13
+	ESP.velBoostMultBox.Text = tostring(ESP.velBoostMult)
+	ESP.velBoostMultBox.PlaceholderText = "Multiplier (any number)"
+	ESP.velBoostMultBox.ClearTextOnFocus = false
+	ESP.velBoostMultBox.Parent = vbRow
+	K.roundCorners(ESP.velBoostMultBox, 6)
+	local function applyVelBoostMultFromBox()
+		local t = ESP.velBoostMultBox.Text
+		local n = tonumber(t)
+		if n and n == n then
+			ESP.velBoostMult = n
+		end
+		K.refreshMoveLabels()
+	end
+	ESP.velBoostMultBox.FocusLost:Connect(applyVelBoostMultFromBox)
+
+	K.addSectionLabel(pageMove, "END OF THE WORLD (TP)")
+	local ewNote = Instance.new("TextLabel")
+	ewNote.BackgroundTransparency = 1
+	ewNote.Font = Enum.Font.Gotham
+	ewNote.TextSize = 11
+	ewNote.TextXAlignment = Enum.TextXAlignment.Left
+	ewNote.TextWrapped = true
+	ewNote.TextColor3 = COL.muted
+	ewNote.Text =
+		"Teleports your character to coordinates so large that terrain/streaming usually stops. Enter one number (diagonal distance) or three comma-separated numbers X,Y,Z (Lua/scientific notation allowed, e.g. 8e307). Uses PivotTo, CFrame, zero velocity, network owner, many retries, and temporarily disables this kit's anti-TP undo for 5s."
+	ewNote.Size = UDim2.new(1, 0, 0, 52)
+	ewNote.Parent = pageMove
+	ESP.endWorldCoordBox = Instance.new("TextBox")
+	ESP.endWorldCoordBox.Size = UDim2.new(1, 0, 0, 32)
+	ESP.endWorldCoordBox.BackgroundColor3 = COL.inputBg
+	ESP.endWorldCoordBox.TextColor3 = Color3.new(1, 1, 1)
+	ESP.endWorldCoordBox.Font = Enum.Font.Code
+	ESP.endWorldCoordBox.TextSize = 13
+	ESP.endWorldCoordBox.Text = "1e18"
+	ESP.endWorldCoordBox.PlaceholderText = "magnitude or X,Y,Z"
+	ESP.endWorldCoordBox.ClearTextOnFocus = false
+	ESP.endWorldCoordBox.Parent = pageMove
+	K.roundCorners(ESP.endWorldCoordBox, 6)
+	K.makeToggleButton(pageMove, "TP — end of the world (force)", function()
+		K.forceTeleportEndOfWorld()
+	end)
+
 	K.addSectionLabel(pageMove, "LOOP WALK")
 	local wsLbl = Instance.new("TextLabel")
 	wsLbl.BackgroundTransparency = 1
@@ -7717,6 +8943,45 @@ function K.menuFillClientTab(pageClient, screen)
 		K.refreshClientLabels()
 	end)
 
+	K.addSectionLabel(pageClient, "CHARACTER (LOCAL QA)")
+	local immortalNote = Instance.new("TextLabel")
+	immortalNote.BackgroundTransparency = 1
+	immortalNote.Font = Enum.Font.Gotham
+	immortalNote.TextSize = 11
+	immortalNote.TextXAlignment = Enum.TextXAlignment.Left
+	immortalNote.TextWrapped = true
+	immortalNote.TextColor3 = COL.muted
+	immortalNote.Text =
+		"LocalScript only: these hooks run on your client. They work best when your character is client-simulated; if the experience’s server overwrites Humanoid or respawns you, toggles may do nothing—that is a replication limit, not a missing file."
+	immortalNote.Size = UDim2.new(1, 0, 0, 56)
+	immortalNote.Parent = pageClient
+	ESP.labels.client.immortal = K.makeToggleButton(pageClient, "Immortal (client QA): off", function()
+		K.setClientImmortal(not ESP.immortalOn)
+	end)
+	ESP.labels.client.noRagdoll = K.makeToggleButton(pageClient, "Disable ragdoll (client QA): off", function()
+		K.setClientNoRagdoll(not ESP.noRagdollOn)
+	end)
+	local permDeathNote = Instance.new("TextLabel")
+	permDeathNote.BackgroundTransparency = 1
+	permDeathNote.Font = Enum.Font.Gotham
+	permDeathNote.TextSize = 11
+	permDeathNote.TextXAlignment = Enum.TextXAlignment.Left
+	permDeathNote.TextWrapped = true
+	permDeathNote.TextColor3 = COL.muted
+	permDeathNote.Text =
+		"Uses game.Players.CharacterAutoLoads = false (often server-only; pcall may do nothing from client). Also destroys any new living Character while the lock is on. Clear lock + allow respawn below. Full control needs a Script in ServerScriptService, not a LocalScript."
+	permDeathNote.Size = UDim2.new(1, 0, 0, 52)
+	permDeathNote.Parent = pageClient
+	K.makeToggleButton(pageClient, "Perm death (no auto-respawn)", function()
+		K.permDeathClient()
+	end)
+	K.makeToggleButton(pageClient, "Clear perm death lock (allow respawn)", function()
+		K.clearPermDeathClient()
+		pcall(function()
+			me:LoadCharacter()
+		end)
+	end)
+
 	K.addSectionLabel(pageClient, "CAMERA")
 	local camLockBtn = K.makeToggleButton(pageClient, "Camera offset: default", function() end)
 	local camMode = true
@@ -8055,9 +9320,73 @@ function K.menuFillTargetTab(pageTarget)
 	end)
 	K.syncTargetKitElevUi()
 
+	K.addSectionLabel(pageTarget, "FLY BEHIND (player + NPC chase)")
+	local fbNote = Instance.new("TextLabel")
+	fbNote.BackgroundTransparency = 1
+	fbNote.Font = Enum.Font.Gotham
+	fbNote.TextSize = 10
+	fbNote.TextXAlignment = Enum.TextXAlignment.Left
+	fbNote.TextWrapped = true
+	fbNote.TextColor3 = COL.muted
+	fbNote.Text =
+		"When on, the chase goal is offset opposite the target’s horizontal motion (or facing if nearly still). Uses the same arc / avoid / speed / height settings."
+	fbNote.Size = UDim2.new(1, 0, 0, 36)
+	fbNote.Parent = pageTarget
+	ESP.targetKitBehindBtn = K.makeToggleButton(pageTarget, "Go fly behind target: off", function(btn)
+		ESP.targetKitFlyBehind = not ESP.targetKitFlyBehind
+		K.syncTargetKitFlyBehindUi()
+	end)
+	local behindRow = Instance.new("Frame")
+	behindRow.BackgroundTransparency = 1
+	behindRow.Size = UDim2.new(1, 0, 0, 34)
+	behindRow.Parent = pageTarget
+	local behindLay = Instance.new("UIListLayout")
+	behindLay.FillDirection = Enum.FillDirection.Horizontal
+	behindLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	behindLay.Padding = UDim.new(0, 8)
+	behindLay.Parent = behindRow
+	ESP.targetKitBehindStudLbl = Instance.new("TextLabel")
+	ESP.targetKitBehindStudLbl.BackgroundTransparency = 1
+	ESP.targetKitBehindStudLbl.Size = UDim2.new(1, -100, 1, 0)
+	ESP.targetKitBehindStudLbl.Font = Enum.Font.Gotham
+	ESP.targetKitBehindStudLbl.TextSize = 11
+	ESP.targetKitBehindStudLbl.TextXAlignment = Enum.TextXAlignment.Left
+	ESP.targetKitBehindStudLbl.TextColor3 = Color3.fromRGB(200, 205, 220)
+	ESP.targetKitBehindStudLbl.Parent = behindRow
+	local behindDown = Instance.new("TextButton")
+	behindDown.Text = "−"
+	behindDown.Size = UDim2.fromOffset(40, 32)
+	behindDown.Font = Enum.Font.GothamBold
+	behindDown.TextSize = 18
+	behindDown.TextColor3 = Color3.new(1, 1, 1)
+	behindDown.BackgroundColor3 = COL.btn
+	behindDown.BorderSizePixel = 0
+	behindDown.Parent = behindRow
+	K.roundCorners(behindDown, 8)
+	behindDown.MouseButton1Click:Connect(function()
+		ESP.targetKitBehindStuds = math.clamp(ESP.targetKitBehindStuds - 2, 2, 200)
+		K.syncTargetKitFlyBehindUi()
+	end)
+	local behindUp = Instance.new("TextButton")
+	behindUp.Text = "+"
+	behindUp.Size = UDim2.fromOffset(40, 32)
+	behindUp.Font = Enum.Font.GothamBold
+	behindUp.TextSize = 18
+	behindUp.TextColor3 = Color3.new(1, 1, 1)
+	behindUp.BackgroundColor3 = COL.btn
+	behindUp.BorderSizePixel = 0
+	behindUp.Parent = behindRow
+	K.roundCorners(behindUp, 8)
+	behindUp.MouseButton1Click:Connect(function()
+		ESP.targetKitBehindStuds = math.clamp(ESP.targetKitBehindStuds + 2, 2, 200)
+		K.syncTargetKitFlyBehindUi()
+	end)
+	K.syncTargetKitFlyBehindUi()
+
 	ESP.targetKitMoveBtn = K.makeToggleButton(pageTarget, "Fly toward target: off", function(btn)
 		if ESP.targetKitChasing then
 			K.targetKitStopNav()
+			btn.Text = "Fly toward target: off"
 		else
 			if K.targetKitStartNav() then
 				btn.Text = "Fly toward target: on (tap to stop)"
@@ -8093,7 +9422,101 @@ function K.menuFillTargetTab(pageTarget)
 		end
 	end)
 
+	K.addSectionLabel(pageTarget, "NPC / DUMMY (Workspace models, not players)")
+	local npcNote = Instance.new("TextLabel")
+	npcNote.BackgroundTransparency = 1
+	npcNote.Font = Enum.Font.Gotham
+	npcNote.TextSize = 11
+	npcNote.TextXAlignment = Enum.TextXAlignment.Left
+	npcNote.TextWrapped = true
+	npcNote.TextColor3 = COL.muted
+	npcNote.Text =
+		"Scans Workspace for Models with a Humanoid that are not player characters. Pick one for the same fly-toward / arc / avoid / fly-behind behavior toward its HumanoidRootPart (or PrimaryPart)."
+	npcNote.Size = UDim2.new(1, 0, 0, 44)
+	npcNote.Parent = pageTarget
+
+	local npcSearch = Instance.new("TextBox")
+	npcSearch.Size = UDim2.new(1, 0, 0, 32)
+	npcSearch.BackgroundColor3 = COL.inputBg
+	npcSearch.TextColor3 = Color3.new(1, 1, 1)
+	npcSearch.Font = Enum.Font.Gotham
+	npcSearch.TextSize = 13
+	npcSearch.Text = ESP.targetKitNpcSearch or ""
+	npcSearch.PlaceholderText = "Filter NPC name (substring)"
+	npcSearch.ClearTextOnFocus = false
+	npcSearch.Parent = pageTarget
+	K.roundCorners(npcSearch, 6)
+	npcSearch:GetPropertyChangedSignal("Text"):Connect(function()
+		ESP.targetKitNpcSearch = npcSearch.Text
+		ESP.targetKitNpcCache = nil
+		K.refreshTargetKitNpcList()
+	end)
+
+	K.makeToggleButton(pageTarget, "Refresh NPC / dummy list", function()
+		ESP.targetKitNpcCache = nil
+		K.refreshTargetKitNpcList()
+	end)
+
+	ESP.targetKitNpcScroll = Instance.new("ScrollingFrame")
+	ESP.targetKitNpcScroll.BackgroundColor3 = COL.listBg
+	ESP.targetKitNpcScroll.BorderSizePixel = 0
+	ESP.targetKitNpcScroll.Size = UDim2.new(1, 0, 0, 120)
+	ESP.targetKitNpcScroll.ScrollBarThickness = 4
+	ESP.targetKitNpcScroll.ScrollBarImageColor3 = COL.accentSoft
+	ESP.targetKitNpcScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	ESP.targetKitNpcScroll.CanvasSize = UDim2.new()
+	ESP.targetKitNpcScroll.Active = true
+	ESP.targetKitNpcScroll.Selectable = true
+	ESP.targetKitNpcScroll.ZIndex = 2
+	ESP.targetKitNpcScroll.Parent = pageTarget
+	K.roundCorners(ESP.targetKitNpcScroll, 8)
+	K.enableTouchScroll(ESP.targetKitNpcScroll)
+	local npcListLay = Instance.new("UIListLayout", ESP.targetKitNpcScroll)
+	npcListLay.Padding = UDim.new(0, 4)
+	npcListLay.SortOrder = Enum.SortOrder.LayoutOrder
+
+	ESP.targetKitNpcMoveBtn = K.makeToggleButton(pageTarget, "Fly toward NPC/dummy: off", function(btn)
+		if ESP.targetKitNpcChasing then
+			K.targetKitStopNav()
+			btn.Text = "Fly toward NPC/dummy: off"
+		else
+			if K.targetKitStartNavNpc() then
+				btn.Text = "Fly toward NPC/dummy: on (tap to stop)"
+			else
+				btn.Text = "Fly toward NPC/dummy: off (pick NPC first)"
+				if ESP.targetKitStatusLbl then
+					ESP.targetKitStatusLbl.Text = "Pick an NPC / dummy in the list first."
+				end
+			end
+		end
+	end)
+
+	K.makeToggleButton(pageTarget, "Teleport next to NPC / dummy", function()
+		if not ESP.targetKitNpcModel or not ESP.targetKitNpcModel.Parent then
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "Pick an NPC / dummy first."
+			end
+			return
+		end
+		if not K.targetKitTeleportToNpcPick() then
+			if ESP.targetKitStatusLbl then
+				ESP.targetKitStatusLbl.Text = "Could not teleport (no character / NPC root)."
+			end
+		end
+	end)
+
+	K.makeToggleButton(pageTarget, "Clear NPC / dummy selection", function()
+		K.targetKitStopNavNpcOnly()
+		ESP.targetKitNpcModel = nil
+		ESP.targetKitNpcCache = nil
+		K.refreshTargetKitNpcList()
+		if ESP.targetKitStatusLbl then
+			ESP.targetKitStatusLbl.Text = "NPC / dummy: (none)"
+		end
+	end)
+
 	task.defer(K.refreshTargetKitList)
+	task.defer(K.refreshTargetKitNpcList)
 end
 
 function K.menuFillCombatTabHitboxOnly(pageCombat)
@@ -10959,6 +12382,22 @@ me.CharacterAdded:Connect(function(char)
 		K.cacheHumanoidDefaults(hum)
 		K.applyWalkJump()
 	end
+	if ESP.immortalOn and not ESP.permDeathActive then
+		task.defer(function()
+			if ESP.immortalOn and not ESP.permDeathActive and me.Character == char then
+				K.setClientImmortal(false)
+				K.setClientImmortal(true)
+			end
+		end)
+	end
+	if ESP.noRagdollOn and not ESP.permDeathActive then
+		task.defer(function()
+			if ESP.noRagdollOn and not ESP.permDeathActive and me.Character == char then
+				K.setClientNoRagdoll(false)
+				K.setClientNoRagdoll(true)
+			end
+		end)
+	end
 	if antiTpOn then
 		K.setAntiTpRunning()
 	end
@@ -10970,6 +12409,29 @@ me.CharacterAdded:Connect(function(char)
 	end
 	if loopWalkOn then
 		K.setLoopWalkRunning()
+	end
+	if ESP.velBoostOn then
+		K.setVelBoostRunning()
+	end
+	if ESP.targetKitChasing then
+		task.defer(function()
+			if ESP.targetKitChasing and me.Character == char and ESP.targetKitUserId then
+				K.targetKitStartNav()
+				if ESP.targetKitMoveBtn then
+					ESP.targetKitMoveBtn.Text = "Fly toward target: on (tap to stop)"
+				end
+			end
+		end)
+	end
+	if ESP.targetKitNpcChasing then
+		task.defer(function()
+			if ESP.targetKitNpcChasing and me.Character == char and ESP.targetKitNpcModel and ESP.targetKitNpcModel.Parent then
+				K.targetKitStartNavNpc()
+				if ESP.targetKitNpcMoveBtn then
+					ESP.targetKitNpcMoveBtn.Text = "Fly toward NPC/dummy: on (tap to stop)"
+				end
+			end
+		end)
 	end
 	if ESP.antiSlownessOn then
 		K.setAntiSlownessRunning()
